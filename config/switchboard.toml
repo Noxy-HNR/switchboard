@@ -1,0 +1,151 @@
+# Switchboard configuration.
+#
+# Every value here can be overridden by an environment variable named
+# SWITCHBOARD_<SECTION>__<KEY> (double underscore separates nesting), e.g.
+#   SWITCHBOARD_ROUTING__MODE=shadow
+#   SWITCHBOARD_SERVER__PORT=8012
+# Secrets (TYPESAFE_API_KEY) are read from the environment or .env only.
+
+[server]
+host = "127.0.0.1"
+port = 8002
+
+[upstream]
+# The llama-server that C:\AI\start.ps1 launches. Switchboard never changes how
+# it is launched; it sits in front of it.
+base_url = "http://127.0.0.1:10000"
+connect_timeout_s = 5.0
+# Generation on a partially offloaded 27B can legitimately run for many minutes.
+request_timeout_s = 900.0
+health_ttl_s = 2.0
+
+[stack]
+ai_root = 'C:\AI'
+models_dir = 'C:\AI\models'
+# Read-only: the model list and per-model llama-server parameters the dashboard owns.
+models_config = 'C:\AI\Config\models.json'
+# The dashboard owns starting/stopping llama-server. Switchboard asks it to switch.
+dashboard_url = "http://127.0.0.1:9090"
+
+[routing]
+# active = switchboard-auto may switch the loaded model through the dashboard.
+# shadow = never switch; answer on the resident model and record what it would have done.
+# off    = no routing at all; pure pass-through to the resident model.
+mode = "active"
+# An explicit model name in the request always wins over automatic routing.
+allow_explicit_switch = true
+# Requests that name no known model fall back to this policy.
+default_policy = "auto"
+
+[routing.guards]
+# A switch must beat staying put by this much expected utility (in seconds) ...
+hysteresis_seconds = 12.0
+# ... and must promise at least this much more chance of a good answer.
+min_quality_gain = 0.08
+# After a switch, hold the new model for at least this long unless a request is
+# infeasible on it (context too small) or the user names another model.
+min_dwell_seconds = 120.0
+# Never restart llama-server while it is generating for anyone (checked via /slots).
+never_switch_when_busy = true
+# How long a request may wait for a model load before giving up and answering on
+# whatever is resident.
+max_switch_wait_s = 300.0
+# Small non-streaming calls are utility traffic (cptr generates chat titles with
+# max_tokens=100 and a 15s client timeout). Never make those wait for a load.
+utility_max_tokens = 160
+# block = refuse to auto-switch to a model whose estimated host-RAM footprint does
+# not fit; warn = allow it and record the risk in the routing reason.
+ram_guard = "warn"
+ram_headroom_gb = 1.0
+
+[policy]
+# What a better answer is worth, expressed as seconds of extra waiting the user
+# would accept for a model that is certain to answer well rather than certain to
+# answer badly. Raising it makes Switchboard switch more eagerly. 400s is
+# calibrated for this machine, where the strong models are 3-6x slower than the
+# fast one: it makes a hard task worth a 22s load plus slower tokens, and leaves
+# a routine task on whatever is already loaded.
+value_of_quality_s = 400.0
+# Steepness of the quality curve around a model's capability ceiling. Higher
+# means a task comfortably inside a model's ceiling gets no benefit from a
+# bigger model, and a task above it benefits sharply.
+capability_slope = 2.5
+# How much a second of *generation* counts against a second of model loading.
+# A streamed answer starts arriving immediately, so slow generation costs less
+# than dead waiting. Non-streaming requests pay the full weight regardless.
+generation_wait_weight = 0.35
+# Expected answer length by difficulty level (trivial, routine, moderate, hard).
+expected_output_tokens = [80, 300, 700, 1200]
+# Characters per token, for estimating prompt size without tokenizing.
+chars_per_token = 3.6
+# Used only when a model has no measured load time: derived from the one real
+# measurement on this machine (MedGemma, 16.5 GB, 27.6 s -> ~1.7 s/GB).
+default_load_s_per_gb = 1.7
+# Conversations keep their model unless the running (not instantaneous) difficulty
+# moves. This weights the newest turn in that running estimate.
+difficulty_ewma_alpha = 0.5
+
+[decisions]
+# Order matters: the first backend that answers wins. Backends not listed are off.
+backends = ["jev", "local", "rules"]
+# Total budget for the semantic layer per request. Whatever has not answered by
+# then loses to the next backend, and ultimately to the rules backend.
+budget_ms = 4000
+# Identical requests within this window reuse the previous decision.
+cache_ttl_s = 300
+cache_max_entries = 512
+
+[decisions.jev]
+# auto = on when TYPESAFE_API_KEY is set, otherwise reported as unconfigured.
+enabled = "auto"
+model = "jev-latest"
+timeout_s = 4.0
+max_retries = 2
+# Consecutive failures before the backend is skipped, and for how long.
+breaker_failures = 3
+breaker_cooldown_s = 60.0
+# Charged per input token: $42 per Btok = $0.042 per Mtok (docs.typesafe.ai/models).
+usd_per_input_mtok = 0.042
+
+[decisions.local]
+# System One Adapter over the resident llama.cpp model.
+enabled = true
+timeout_s = 20.0
+# Skip when the resident model generates slower than this: on a 5 tok/s 27B a
+# structured decision costs more than it saves.
+min_resident_gen_tps = 15.0
+# Skip when llama-server is already generating: --parallel 1 means we would queue.
+skip_when_busy = true
+# Ask the adapter for one value per question rather than a probability map: fewer
+# tokens, and a local model's stated probabilities are not calibrated anyway.
+answer_mode = "discrete"
+max_output_tokens = 512
+
+[decisions.logit]
+# Experimental: read first-token probabilities from llama.cpp instead of generating
+# JSON. Off until validated on this machine - see docs/EXPERIMENT-LOGITS.md.
+enabled = false
+timeout_s = 15.0
+top_logprobs = 20
+min_resident_gen_tps = 0.0
+skip_when_busy = true
+
+[decisions.rules]
+# Deterministic keyword/shape heuristics. Always available, never fails.
+enabled = true
+
+[privacy]
+# Redact secrets from anything leaving the process (cloud state and stored previews).
+redact = true
+# Hard cap on the state sent to a cloud decision provider.
+max_state_chars = 1500
+# Store a short redacted preview of requests alongside the hash, for debugging.
+store_previews = true
+preview_chars = 80
+# Set false to keep every request on this machine even when a key is configured.
+allow_cloud = true
+
+[observability]
+db_path = "data/switchboard.sqlite3"
+# Keep route rows this long; `switchboard prune` enforces it.
+retention_days = 30

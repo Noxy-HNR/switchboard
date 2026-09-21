@@ -1,0 +1,90 @@
+# Capability overlay for the models in C:\AI\models.
+#
+# Everything Switchboard can read for itself - file size, configured context,
+# GPU layers, chat template, whether the file still exists - comes from
+# C:\AI\Config\models.json and the GGUF headers. This file adds only the two
+# things a machine cannot read off disk:
+#
+#   1. capability ceilings: editable policy priors, NOT benchmarks.
+#   2. measured speeds: real numbers with their provenance recorded.
+#
+# A capability ceiling is the task difficulty (same 0-3 scale the difficulty
+# decision uses) at which this model has a coin-flip chance of answering well.
+# Higher = trusted with harder work in that domain. Tune these by hand; the
+# routing reason always names the ceiling that decided a route.
+#
+# Anything Switchboard measures at runtime (load seconds, tokens/sec) is stored
+# in the database and overrides the seeds below.
+
+[[model]]
+file = "Qwen3.5-9B-UD-Q6_K_XL.gguf"
+id = "qwen3.5-9b"
+aliases = ["qwen9b", "9b", "fast"]
+role = "general-fast"
+summary = "Fast general model, fully GPU resident. The daily driver."
+enabled = true
+tool_calling = "good"
+
+[model.capability]
+general = 2.1
+coding = 2.0
+research = 1.9
+medical = 1.0
+writing = 2.1
+system_ops = 2.0
+
+[model.measured]
+gen_tps = 30.2
+gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 5 (2026-09-10), Brave open"
+prompt_tps = 300.0
+prompt_tps_source = "estimate: full GPU offload, not yet measured on this machine"
+
+[[model]]
+file = "Qwen3.8-27B-Uncensored-IQ3_M.gguf"
+id = "qwen3.8-27b"
+aliases = ["qwen27b", "27b", "deep"]
+role = "deep-reasoning"
+summary = "Strongest general reasoning available locally. Partially offloaded (60/64 layers), ~3x slower than the 9B."
+enabled = true
+tool_calling = "good"
+
+[model.capability]
+general = 2.6
+coding = 2.5
+research = 2.5
+medical = 1.6
+writing = 2.5
+system_ops = 2.4
+
+[model.measured]
+gen_tps = 10.2
+gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 4 (2026-09-10), Brave open, 9.6-10.8 tok/s"
+prompt_tps = 60.0
+prompt_tps_source = "estimate: partial offload, not yet measured on this machine"
+
+[[model]]
+file = "medgemma-27b-it-Q4_K_M.gguf"
+id = "medgemma-27b"
+aliases = ["medgemma", "medical"]
+role = "medical-specialist"
+summary = "Medical/clinical specialist. Slowest of the three and its file (16.5 GB) exceeds total system RAM."
+enabled = true
+# Gemma-3 based: its chat template has no tool-call support. Verified from the
+# GGUF chat template at registry build time; this is the fallback assumption.
+tool_calling = "none"
+
+[model.capability]
+general = 1.9
+coding = 1.2
+research = 1.8
+medical = 2.8
+writing = 1.9
+system_ops = 1.0
+
+[model.measured]
+gen_tps = 5.0
+gen_tps_source = "C:/AI/Logs/llama.stderr.log (2026-09-18), 4.6-5.6 tok/s over several completions"
+prompt_tps = 23.0
+prompt_tps_source = "C:/AI/Logs/llama.stderr.log (2026-09-18), 22.8 tok/s on a 124-token prompt"
+load_s = 27.6
+load_s_source = "C:/AI/Logs/llama.stderr.log (2026-09-18): process start to 'model loaded'"

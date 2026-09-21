@@ -1,0 +1,22 @@
+# Secrets — never commit
+.env
+*.key
+*.pem
+
+# Local runtime state
+data/
+logs/
+reports/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Backups Switchboard takes of files outside this project
+backups/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/

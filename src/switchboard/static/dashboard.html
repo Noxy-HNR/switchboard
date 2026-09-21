@@ -1,0 +1,1241 @@
+<!DOCTYPE html>
+<!--
+  Switchboard dashboard.
+
+  One file on purpose. This page is served by a process whose whole job is to
+  sit in front of a local llama-server on a machine that may have no network,
+  so a build step, a CDN or a web font would each be a way for the dashboard to
+  stop working exactly when the stack is broken and someone needs to look at it.
+  Plain HTML, CSS and vanilla JS, no dependencies, no external references.
+
+  Two rules the code follows:
+
+  * Everything from the API goes into the DOM through textContent or a property
+    assignment, never innerHTML. Model names and decision reasons originate in
+    request bodies and GGUF headers, so they are attacker-influenced in
+    principle and are treated as data here.
+  * A number that was measured on this machine and a number that came from a
+    prior in config/models.toml are rendered differently, always. The rest of
+    the project refuses to pass estimates off as measurements and the dashboard
+    is not the place to start.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Switchboard</title>
+<style>
+  :root {
+    --bg:      #0d1117;
+    --panel:   #141a22;
+    --panel-2: #10161d;
+    --line:    #232c38;
+    --line-2:  #2f3a48;
+    --fg:      #d7e0ea;
+    --fg-soft: #aab6c3;
+    --dim:     #77838f;
+    --green:   #3fb950;
+    --amber:   #d6a222;
+    --red:     #f85149;
+    --blue:    #58a6ff;
+    --violet:  #a371f7;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
+    --sans: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  body { padding: 0 0 48px; }
+
+  /* --- shadow-mode stripe -------------------------------------------- */
+
+  #shadow-stripe {
+    height: 6px;
+    background: repeating-linear-gradient(
+      135deg, var(--amber) 0 14px, #0d1117 14px 28px
+    );
+  }
+  #shadow-stripe[hidden] { display: none; }
+
+  /* --- header --------------------------------------------------------- */
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    padding: 10px 16px;
+  }
+
+  .header-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    margin-bottom: 10px;
+  }
+
+  .brand {
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    font-size: 12px;
+    color: var(--fg-soft);
+  }
+
+  .mode-badge {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border-radius: 3px;
+    border: 2px solid var(--dim);
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .mode-badge[data-mode="active"] { border-color: var(--green); color: #0d1117; background: var(--green); }
+  .mode-badge[data-mode="shadow"] { border-color: var(--amber); color: #0d1117; background: var(--amber); }
+  .mode-badge[data-mode="off"]    { border-color: var(--red);   color: var(--red);  background: transparent; }
+
+  .mode-note {
+    font-size: 12px;
+    color: var(--amber);
+    font-weight: 600;
+  }
+
+  .spacer { flex: 1 1 auto; }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--dim);
+  }
+
+  button {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg);
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-radius: 3px;
+    padding: 4px 12px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--blue); color: var(--blue); }
+  button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  button[data-paused="true"] { border-color: var(--amber); color: var(--amber); }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .fact {
+    background: var(--panel-2);
+    padding: 6px 10px;
+    min-width: 0;
+  }
+  .fact .label {
+    font-size: 10px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .fact .value {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* --- layout --------------------------------------------------------- */
+
+  main {
+    padding: 14px 16px 0;
+    display: grid;
+    gap: 14px;
+    grid-template-columns: 1fr;
+    max-width: 1800px;
+  }
+
+  @media (min-width: 1100px) {
+    main { grid-template-columns: 3fr 2fr; }
+    #routes-section { grid-column: 1 / 2; }
+    #side-column   { grid-column: 2 / 3; grid-row: 2 / 4; display: grid; gap: 14px; align-content: start; }
+    #models-section { grid-column: 1 / -1; }
+  }
+
+  section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    min-width: 0;
+  }
+
+  h2 {
+    margin: 0;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--fg-soft);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  h2 .hint {
+    font-size: 10px;
+    letter-spacing: .02em;
+    text-transform: none;
+    color: var(--dim);
+    font-weight: 400;
+  }
+
+  .body { padding: 10px 12px; }
+
+  /* --- tables --------------------------------------------------------- */
+
+  .scroll { overflow-x: auto; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  th {
+    text-align: left;
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 600;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--line-2);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 4px 10px;
+    border-bottom: 1px solid #1a212a;
+    vertical-align: top;
+  }
+
+  tbody tr:hover td { background: #19212b; }
+
+  .num {
+    font-family: var(--mono);
+    text-align: right;
+    white-space: nowrap;
+  }
+  .mono { font-family: var(--mono); white-space: nowrap; }
+
+  /* Provenance of a number. The whole project turns on this distinction. */
+  .measured { color: var(--fg); }
+  .estimate {
+    color: var(--amber);
+    border-bottom: 1px dotted var(--amber);
+    cursor: help;
+  }
+  .unknown { color: var(--dim); }
+
+  .resident-row td { background: #12211a; }
+  .resident-row td:first-child { box-shadow: inset 3px 0 0 var(--green); }
+
+  .tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 2px;
+    border: 1px solid var(--line-2);
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .tag.ok    { color: var(--green);  border-color: #1d3b26; }
+  .tag.warn  { color: var(--amber);  border-color: #3d3318; }
+  .tag.bad   { color: var(--red);    border-color: #4a2320; }
+  .tag.info  { color: var(--blue);   border-color: #1d3350; }
+  .tag.quiet { color: var(--dim); }
+
+  .dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+    margin-right: 6px;
+    vertical-align: baseline;
+  }
+  .dot.ok  { background: var(--green); }
+  .dot.bad { background: var(--red); }
+  .dot.warn{ background: var(--amber); }
+
+  .reason {
+    color: var(--fg-soft);
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: help;
+  }
+
+  .empty {
+    padding: 18px 12px;
+    color: var(--dim);
+    font-style: italic;
+    text-align: center;
+  }
+
+  /* --- bars and summaries --------------------------------------------- */
+
+  .barlist { display: grid; gap: 4px; }
+
+  .barrow {
+    display: grid;
+    grid-template-columns: minmax(80px, 1.3fr) 3fr auto;
+    gap: 8px;
+    align-items: center;
+    font-size: 12px;
+  }
+  .barrow .name {
+    font-family: var(--mono);
+    color: var(--fg-soft);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bartrack {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    height: 12px;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .barfill { height: 100%; background: var(--blue); }
+  .barrow .count { font-family: var(--mono); color: var(--fg); min-width: 34px; text-align: right; }
+
+  .kv {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .kv > div {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 5px 9px;
+  }
+  .kv .label {
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .kv .value { font-family: var(--mono); font-size: 15px; }
+
+  .subhead {
+    font-size: 10px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin: 14px 0 6px;
+  }
+  .subhead:first-child { margin-top: 0; }
+
+  #latency-chart { width: 100%; height: auto; display: block; }
+  .axis-label { font-family: var(--mono); font-size: 9px; fill: var(--dim); }
+  .bar-value  { font-family: var(--mono); font-size: 9px; fill: var(--fg-soft); }
+
+  /* --- banners -------------------------------------------------------- */
+
+  #banner {
+    margin: 12px 16px 0;
+    padding: 7px 11px;
+    border: 1px solid #4a2320;
+    background: #1d1414;
+    color: var(--red);
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: pre-wrap;
+  }
+  #banner[hidden] { display: none; }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--dim);
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+
+  .problems {
+    margin: 0;
+    padding: 6px 12px 6px 28px;
+    font-size: 11px;
+    color: var(--amber);
+    background: #1a1710;
+    border-top: 1px solid var(--line);
+  }
+  .problems[hidden] { display: none; }
+
+  @media (max-width: 560px) {
+    .reason { max-width: 190px; }
+    .fact .value { font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="shadow-stripe" hidden></div>
+
+<header id="header">
+  <div class="header-top">
+    <span class="brand">Switchboard</span>
+    <span class="mode-badge" id="mode-badge" data-mode="unknown">mode ?</span>
+    <span class="mode-note" id="mode-note"></span>
+    <span class="spacer"></span>
+    <div class="controls">
+      <span id="updated">never updated</span>
+      <button id="pause-btn" type="button" data-paused="false">Pause</button>
+      <button id="refresh-btn" type="button">Refresh now</button>
+    </div>
+  </div>
+  <div class="facts" id="facts"></div>
+</header>
+
+<div id="banner" hidden></div>
+
+<main id="dashboard">
+
+  <section id="routes-section">
+    <h2>Recent routes <span class="hint">newest first, from /routes</span></h2>
+    <div class="scroll">
+      <table id="routes-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Selected model</th>
+            <th>Backend</th>
+            <th class="num">Decide</th>
+            <th>Switch</th>
+            <th>Src</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="routes-body"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="routes-empty">no routes recorded yet</div>
+  </section>
+
+  <div id="side-column">
+
+    <section id="providers-section">
+      <h2>Decision providers <span class="hint">/providers, 24h</span></h2>
+      <div class="scroll">
+        <table id="providers-table">
+          <thead>
+            <tr>
+              <th>Backend</th>
+              <th>Breaker</th>
+              <th class="num">p50</th>
+              <th class="num">p95</th>
+              <th class="num">Calls</th>
+              <th class="num">Cost 24h</th>
+            </tr>
+          </thead>
+          <tbody id="providers-body"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="providers-empty">no decision backends reported</div>
+    </section>
+
+    <section id="summary-section">
+      <h2>Summary <span class="hint">/stats, last 24h</span></h2>
+      <div class="body" id="summary-body">
+        <div class="kv" id="summary-kv"></div>
+        <div class="subhead">Routes by model</div>
+        <div class="barlist" id="by-model"></div>
+        <div class="subhead">Decision latency, last 50 routes</div>
+        <div id="latency-wrap"></div>
+        <div class="subhead">Recent switches</div>
+        <div id="switch-list"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <section id="models-section">
+    <h2>Models <span class="hint">/registry, resident model highlighted</span></h2>
+    <div class="legend">
+      <span><span class="measured">12.3</span> measured on this machine</span>
+      <span><span class="estimate">~12.3</span> prior from config, not a measurement</span>
+      <span><span class="unknown">--</span> unknown</span>
+    </div>
+    <div class="scroll">
+      <table id="models-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Role</th>
+            <th class="num">Context</th>
+            <th class="num">Size</th>
+            <th class="num">Gen tok/s</th>
+            <th class="num">Load s</th>
+            <th>Tools</th>
+            <th>State</th>
+          </tr>
+        </thead>
+        <tbody id="models-body"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="models-empty">no models in the registry</div>
+    <ul class="problems" id="registry-problems" hidden></ul>
+  </section>
+
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // The API paths this page reads. Kept in one place so the set the dashboard
+  // depends on is greppable from a test.
+  var API = {
+    status:    "/status",
+    providers: "/providers?probe=false",
+    routes:    "/routes?limit=50",
+    stats:     "/stats?hours=24",
+    models:    "/registry"
+  };
+
+  var REFRESH_MS = 5000;
+  var REASON_CHARS = 90;
+
+  var state = { paused: false, timer: null, inflight: false };
+
+  // --- tiny DOM helpers ------------------------------------------------
+  // Every one of these sets text through textContent. Nothing in this file
+  // assigns innerHTML with API data, and nothing should start.
+
+  function byId(id) { return document.getElementById(id); }
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) { node.className = className; }
+    if (text !== undefined && text !== null) { node.textContent = String(text); }
+    return node;
+  }
+
+  function td(row, text, className, title) {
+    var cell = el("td", className, text === null || text === undefined ? "--" : text);
+    if (title) { cell.title = String(title); }
+    row.appendChild(cell);
+    return cell;
+  }
+
+  function clear(node) { node.replaceChildren(); }
+
+  // --- formatting ------------------------------------------------------
+
+  function isNum(value) { return typeof value === "number" && isFinite(value); }
+
+  function fmt(value, digits) {
+    if (!isNum(value)) { return "--"; }
+    return value.toFixed(digits === undefined ? 1 : digits);
+  }
+
+  function fmtMs(value) {
+    if (!isNum(value)) { return "--"; }
+    if (value >= 10000) { return (value / 1000).toFixed(1) + "s"; }
+    if (value >= 1000) { return (value / 1000).toFixed(2) + "s"; }
+    if (value >= 100) { return value.toFixed(0) + "ms"; }
+    return value.toFixed(1) + "ms";
+  }
+
+  function fmtInt(value) {
+    if (!isNum(value)) { return "--"; }
+    return String(Math.round(value));
+  }
+
+  function fmtContext(value) {
+    if (!isNum(value) || value <= 0) { return "--"; }
+    if (value % 1024 === 0) { return (value / 1024) + "k"; }
+    return String(value);
+  }
+
+  function fmtClock(iso) {
+    if (!iso) { return "--"; }
+    var stamp = new Date(iso);
+    if (isNaN(stamp.getTime())) { return String(iso); }
+    return stamp.toTimeString().slice(0, 8);
+  }
+
+  function fmtUptime(seconds) {
+    if (!isNum(seconds)) { return "--"; }
+    var total = Math.floor(seconds);
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    var s = total % 60;
+    if (h > 0) { return h + "h " + m + "m"; }
+    if (m > 0) { return m + "m " + s + "s"; }
+    return s + "s";
+  }
+
+  function truncate(text, limit) {
+    var value = String(text);
+    return value.length > limit ? value.slice(0, limit - 1) + "…" : value;
+  }
+
+  // --- measurement provenance -------------------------------------------
+  // A Measurement is {value, source, measured, samples} or null. The three
+  // cases look different on purpose: a prior read out of config/models.toml
+  // must never be mistaken for something this machine actually did.
+
+  function measurementCell(row, measurement, digits) {
+    if (!measurement || !isNum(measurement.value)) {
+      return td(row, "--", "num unknown", "no measurement and no prior");
+    }
+    var value = fmt(measurement.value, digits);
+    var source = measurement.source || "unknown source";
+    if (measurement.measured) {
+      var samples = isNum(measurement.samples) ? measurement.samples : 1;
+      return td(row, value, "num measured",
+        "measured here: " + source + ", " + samples + " sample" + (samples === 1 ? "" : "s"));
+    }
+    return td(row, "~" + value, "num estimate",
+      "ESTIMATE, not measured. Source: " + source);
+  }
+
+  // --- fetching ---------------------------------------------------------
+
+  function getJSON(path) {
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 4000);
+    return fetch(path, {
+      headers: { accept: "application/json" },
+      cache: "no-store",
+      signal: controller.signal
+    }).then(function (response) {
+      if (!response.ok) { throw new Error(path + " returned HTTP " + response.status); }
+      return response.json();
+    }).finally(function () { clearTimeout(timeout); });
+  }
+
+  function refresh() {
+    if (state.inflight) { return Promise.resolve(); }
+    state.inflight = true;
+
+    var keys = ["status", "providers", "routes", "stats", "models"];
+    return Promise.allSettled(keys.map(function (key) { return getJSON(API[key]); }))
+      .then(function (results) {
+        var data = {};
+        var failures = [];
+        results.forEach(function (result, index) {
+          var key = keys[index];
+          if (result.status === "fulfilled") {
+            data[key] = result.value;
+          } else {
+            var error = result.reason;
+            var message = error && error.name === "AbortError"
+              ? API[key] + " timed out"
+              : (error && error.message) ? error.message : String(error);
+            failures.push(message);
+          }
+        });
+        render(data, failures);
+      })
+      .finally(function () { state.inflight = false; });
+  }
+
+  // --- rendering --------------------------------------------------------
+
+  function render(data, failures) {
+    renderBanner(failures);
+    renderHeader(data.status);
+    renderModels(data.models, data.status);
+    renderRoutes(data.routes);
+    renderProviders(data.providers, data.status);
+    renderSummary(data.stats, data.routes);
+    byId("updated").textContent = "updated " + new Date().toTimeString().slice(0, 8);
+  }
+
+  function renderBanner(failures) {
+    var banner = byId("banner");
+    if (!failures.length) {
+      banner.hidden = true;
+      clear(banner);
+      return;
+    }
+    banner.hidden = false;
+    banner.textContent = failures.length === 1
+      ? "Could not read " + failures[0]
+      : "Could not read " + failures.length + " endpoints:\n  " + failures.join("\n  ");
+  }
+
+  function fact(label, value, className, title) {
+    var wrap = el("div", "fact");
+    wrap.appendChild(el("div", "label", label));
+    var valueNode = el("div", "value" + (className ? " " + className : ""));
+    if (typeof value === "string" || typeof value === "number") {
+      valueNode.textContent = String(value);
+    } else if (value) {
+      valueNode.appendChild(value);
+    } else {
+      valueNode.textContent = "--";
+    }
+    if (title) { wrap.title = String(title); }
+    wrap.appendChild(valueNode);
+    return wrap;
+  }
+
+  function withDot(text, dotClass) {
+    var wrap = document.createDocumentFragment();
+    wrap.appendChild(el("span", "dot " + dotClass));
+    wrap.appendChild(document.createTextNode(String(text)));
+    return wrap;
+  }
+
+  function renderHeader(status) {
+    var badge = byId("mode-badge");
+    var note = byId("mode-note");
+    var stripe = byId("shadow-stripe");
+    var facts = byId("facts");
+    clear(facts);
+
+    if (!status) {
+      badge.dataset.mode = "unknown";
+      badge.textContent = "no status";
+      note.textContent = "";
+      stripe.hidden = true;
+      facts.appendChild(fact("upstream", "unreachable", "unknown"));
+      return;
+    }
+
+    var mode = String(status.mode || "unknown");
+    badge.dataset.mode = mode;
+    badge.textContent = mode;
+    stripe.hidden = mode !== "shadow";
+    if (mode === "shadow") {
+      note.textContent = "shadow mode: decisions are recorded, no model is switched";
+    } else if (mode === "off") {
+      note.textContent = "routing off: requests pass through to whatever is loaded";
+    } else {
+      note.textContent = "";
+    }
+
+    var upstream = status.upstream || {};
+    var healthy = upstream.healthy === true;
+    var busy = upstream.busy === true;
+
+    facts.appendChild(fact(
+      "llama-server",
+      withDot(healthy ? "healthy" : "down", healthy ? "ok" : "bad"),
+      null,
+      healthy ? (upstream.model_path || "") : (upstream.error || "no error text")
+    ));
+    facts.appendChild(fact(
+      "state",
+      withDot(busy ? "busy" : "idle", busy ? "warn" : "ok"),
+      null,
+      "busy is llama-server's own flag, ORed with Switchboard's in-flight count"
+    ));
+    facts.appendChild(fact("resident model", status.resident_model || "none", null,
+      upstream.model_path || ""));
+    facts.appendChild(fact("in flight", fmtInt(status.inflight)));
+    facts.appendChild(fact("upstream ctx", fmtContext(upstream.context_size)));
+    facts.appendChild(fact("health ping", fmtMs(upstream.latency_ms)));
+
+    var executor = status.executor || {};
+    facts.appendChild(fact(
+      "executor",
+      withDot(executor.name || "none", executor.available ? "ok" : "warn"),
+      null,
+      executor.detail || ""
+    ));
+    facts.appendChild(fact("uptime", fmtUptime(status.uptime_s)));
+
+    var host = status.host || {};
+    if (isNum(host.ram_free_gb) || isNum(host.ram_total_gb)) {
+      facts.appendChild(fact("host RAM free",
+        fmt(host.ram_free_gb, 1) + " / " + fmt(host.ram_total_gb, 1) + " GB",
+        null, host.ram_error || ""));
+    }
+    if (isNum(host.vram_free_mb) || isNum(host.vram_total_mb)) {
+      facts.appendChild(fact("VRAM free",
+        fmtInt(host.vram_free_mb) + " / " + fmtInt(host.vram_total_mb) + " MB",
+        null, [host.gpu_name, host.driver, host.gpu_error].filter(Boolean).join(" | ")));
+    }
+  }
+
+  function renderModels(models, status) {
+    var body = byId("models-body");
+    var empty = byId("models-empty");
+    var problemList = byId("registry-problems");
+    clear(body);
+    clear(problemList);
+
+    var payload = models || status;
+    var rows = (payload && Array.isArray(payload.models)) ? payload.models : null;
+    var resident = null;
+    if (models && models.resident) { resident = models.resident; }
+    else if (status && status.resident_model) { resident = status.resident_model; }
+
+    var problems = [];
+    if (models && Array.isArray(models.problems)) { problems = models.problems; }
+    else if (status && Array.isArray(status.registry_problems)) { problems = status.registry_problems; }
+
+    if (!rows) {
+      empty.textContent = "registry unavailable";
+      empty.hidden = false;
+      problemList.hidden = true;
+      return;
+    }
+    if (!rows.length) {
+      empty.textContent = "no models in the registry";
+      empty.hidden = false;
+    } else {
+      empty.hidden = true;
+    }
+
+    rows.forEach(function (model) {
+      var row = el("tr");
+      if (model.id && model.id === resident) { row.className = "resident-row"; }
+
+      var nameCell = td(row, model.id || model.filename || "?", "mono",
+        [model.filename, model.summary].filter(Boolean).join(" - "));
+      if (model.id && model.id === resident) {
+        nameCell.appendChild(document.createTextNode(" "));
+        nameCell.appendChild(el("span", "tag ok", "resident"));
+      }
+
+      td(row, model.role || "--", "", model.summary || "");
+      td(row, fmtContext(model.context_limit), "num",
+        "configured " + fmtContext(model.configured_context) +
+        ", native " + fmtContext(model.native_context));
+      td(row, isNum(model.size_gb) ? fmt(model.size_gb, 1) + " GB" : "--", "num",
+        model.architecture ? "architecture: " + model.architecture : "");
+
+      measurementCell(row, model.gen_tps, 1);
+      measurementCell(row, model.load_s, 1);
+
+      var toolCell = el("td");
+      toolCell.appendChild(el("span",
+        "tag " + (model.supports_tools ? "ok" : "quiet"),
+        model.supports_tools ? "tools" : "no tools"));
+      toolCell.title = "decided by the GGUF chat template when it is readable";
+      row.appendChild(toolCell);
+
+      var stateCell = el("td");
+      if (model.exists === false) {
+        stateCell.appendChild(el("span", "tag bad", "missing"));
+      } else if (model.enabled === false) {
+        stateCell.appendChild(el("span", "tag quiet", "disabled"));
+      } else if (model.fully_offloaded) {
+        stateCell.appendChild(el("span", "tag ok", "on GPU"));
+      } else {
+        var partial = el("span", "tag warn", "partial");
+        partial.title = "about " + fmt(model.host_ram_estimate_gb, 1) + " GB would sit in host RAM";
+        stateCell.appendChild(partial);
+      }
+      row.appendChild(stateCell);
+
+      body.appendChild(row);
+    });
+
+    if (problems.length) {
+      problems.forEach(function (problem) {
+        problemList.appendChild(el("li", null, problem));
+      });
+      problemList.hidden = false;
+    } else {
+      problemList.hidden = true;
+    }
+  }
+
+  function renderRoutes(routes) {
+    var body = byId("routes-body");
+    var empty = byId("routes-empty");
+    clear(body);
+
+    if (!routes) {
+      empty.textContent = "route history unavailable";
+      empty.hidden = false;
+      return;
+    }
+    var rows = Array.isArray(routes.routes) ? routes.routes : [];
+    if (!rows.length) {
+      empty.textContent = routes.note ? String(routes.note) : "no routes recorded yet";
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+
+    rows.forEach(function (route) {
+      var row = el("tr");
+      td(row, fmtClock(route.ts), "mono", route.ts || "");
+      td(row, route.selected_model || "unrouted", "mono",
+        route.requested_model ? "requested: " + route.requested_model : "no model requested");
+      td(row, route.decision_backend || "none", "mono",
+        isNum(route.confidence) ? "confidence " + fmt(route.confidence, 2) : "");
+      td(row, fmtMs(route.decision_latency_ms), "num");
+
+      var switchCell = el("td");
+      if (route.switched) {
+        var tag = el("span", "tag info", "switch " + fmtMs(route.switch_ms));
+        tag.title = "loaded " + (route.selected_model || "?") +
+          " over " + (route.resident_before || "?");
+        switchCell.appendChild(tag);
+      } else {
+        switchCell.appendChild(el("span", "tag quiet", "no"));
+      }
+      row.appendChild(switchCell);
+
+      td(row, route.source || "--", "mono",
+        route.policy ? "policy: " + route.policy : "");
+
+      var reason = route.reason || "";
+      var reasonCell = td(row, reason ? truncate(reason, REASON_CHARS) : "--", "reason");
+      if (reason) { reasonCell.title = reason; }
+
+      body.appendChild(row);
+    });
+  }
+
+  function renderProviders(providers, status) {
+    var body = byId("providers-body");
+    var empty = byId("providers-empty");
+    clear(body);
+
+    var health = null;
+    var order = [];
+    var stats = {};
+    if (providers) {
+      health = providers.health || null;
+      order = Array.isArray(providers.order) ? providers.order : [];
+      stats = providers.last_24h || {};
+    } else if (status && status.providers) {
+      health = status.providers;
+    }
+
+    if (!health) {
+      empty.textContent = "provider health unavailable";
+      empty.hidden = false;
+      return;
+    }
+
+    var names = order.slice();
+    Object.keys(health).forEach(function (name) {
+      if (names.indexOf(name) === -1) { names.push(name); }
+    });
+
+    if (!names.length) {
+      empty.textContent = "no decision backends reported";
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+
+    names.forEach(function (name) {
+      var entry = health[name] || {};
+      var usage = stats[name] || {};
+      var row = el("tr");
+
+      var availability = String(entry.availability || "unknown");
+      var dotClass = availability === "available" ? "ok"
+        : (availability === "unavailable" ? "bad" : "warn");
+      var nameCell = el("td", "mono");
+      nameCell.appendChild(el("span", "dot " + dotClass));
+      nameCell.appendChild(document.createTextNode(name));
+      nameCell.title = availability + ": " + (entry.reason || "no detail");
+      row.appendChild(nameCell);
+
+      var breakerCell = el("td");
+      if (entry.open) {
+        var open = el("span", "tag bad", "open " + fmt(entry.reopens_in_s, 0) + "s");
+        open.title = entry.last_error ? "last error: " + entry.last_error : "breaker is open";
+        breakerCell.appendChild(open);
+      } else if (isNum(entry.consecutive_failures) && entry.consecutive_failures > 0) {
+        var warn = el("span", "tag warn", "fails " + entry.consecutive_failures);
+        warn.title = entry.last_error ? "last error: " + entry.last_error : "";
+        breakerCell.appendChild(warn);
+      } else {
+        breakerCell.appendChild(el("span", "tag ok", "closed"));
+      }
+      row.appendChild(breakerCell);
+
+      td(row, fmtMs(usage.p50_latency_ms), "num");
+      td(row, fmtMs(usage.p95_latency_ms), "num");
+
+      var attempts = isNum(usage.attempts) ? usage.attempts : 0;
+      var ok = isNum(usage.ok) ? usage.ok : 0;
+      var errorKinds = usage.error_kinds || {};
+      var errorText = Object.keys(errorKinds).map(function (kind) {
+        return kind + " x" + errorKinds[kind];
+      }).join(", ");
+      td(row, attempts ? ok + "/" + attempts : "--", "num",
+        errorText ? "failures: " + errorText : "no failures in the window");
+
+      var cost = isNum(usage.est_cost_usd) ? usage.est_cost_usd : null;
+      td(row, cost === null ? "--" : "$" + cost.toFixed(4), "num estimate",
+        "estimated from token counts and list prices, not a bill");
+
+      body.appendChild(row);
+    });
+  }
+
+  function summaryTile(label, value, title) {
+    var wrap = el("div");
+    wrap.appendChild(el("div", "label", label));
+    wrap.appendChild(el("div", "value", value));
+    if (title) { wrap.title = String(title); }
+    return wrap;
+  }
+
+  function renderSummary(stats, routes) {
+    var kv = byId("summary-kv");
+    var byModel = byId("by-model");
+    var switchList = byId("switch-list");
+    clear(kv);
+    clear(byModel);
+    clear(switchList);
+
+    var routeStats = (stats && stats.routes) ? stats.routes : null;
+    var switches = (stats && Array.isArray(stats.switches)) ? stats.switches : [];
+
+    if (!routeStats) {
+      kv.appendChild(summaryTile("stats", stats && stats.note ? String(stats.note) : "unavailable"));
+      byModel.appendChild(el("div", "empty", "no routes recorded yet"));
+      switchList.appendChild(el("div", "empty", "no switches recorded yet"));
+      renderLatencyChart(routes);
+      return;
+    }
+
+    kv.appendChild(summaryTile("routes", fmtInt(routeStats.routes), "routes in the window"));
+    kv.appendChild(summaryTile("switches", fmtInt(routeStats.switches),
+      "routes that loaded a different model"));
+    kv.appendChild(summaryTile("fallbacks", fmtInt(routeStats.fallbacks),
+      "routes where a decision backend failed and the chain fell through"));
+    kv.appendChild(summaryTile("decide p50", fmtMs(routeStats.p50_decision_ms)));
+    kv.appendChild(summaryTile("decide p95", fmtMs(routeStats.p95_decision_ms)));
+
+    var loads = switches
+      .map(function (item) { return item.load_ms; })
+      .filter(isNum);
+    var loadText = "--";
+    if (loads.length) {
+      var sorted = loads.slice().sort(function (a, b) { return a - b; });
+      loadText = fmtMs(sorted[Math.floor(sorted.length / 2)]);
+    }
+    kv.appendChild(summaryTile("switch p50", loadText,
+      "median load time over the last " + loads.length + " recorded switch(es)"));
+
+    var models = routeStats.by_model || {};
+    var names = Object.keys(models).sort(function (a, b) { return models[b] - models[a]; });
+    if (!names.length) {
+      byModel.appendChild(el("div", "empty", "no routes recorded yet"));
+    } else {
+      var max = Math.max.apply(null, names.map(function (name) { return models[name]; }));
+      names.forEach(function (name) {
+        var count = models[name];
+        var row = el("div", "barrow");
+        row.appendChild(el("div", "name", name));
+        var track = el("div", "bartrack");
+        var fill = el("div", "barfill");
+        fill.style.width = (max > 0 ? (count / max) * 100 : 0).toFixed(1) + "%";
+        track.appendChild(fill);
+        row.appendChild(track);
+        row.appendChild(el("div", "count", String(count)));
+        row.title = name + ": " + count + " route(s)";
+        byModel.appendChild(row);
+      });
+    }
+
+    renderLatencyChart(routes);
+
+    if (!switches.length) {
+      switchList.appendChild(el("div", "empty", "no switches recorded yet"));
+    } else {
+      var table = el("table");
+      var tbody = el("tbody");
+      switches.slice(0, 6).forEach(function (item) {
+        var row = el("tr");
+        td(row, fmtClock(item.ts), "mono", item.ts || "");
+        td(row, (item.from_model || "none") + " → " + (item.to_model || "?"), "mono",
+          item.reason || "");
+        td(row, fmtMs(item.load_ms), "num");
+        var okCell = el("td");
+        okCell.appendChild(el("span", item.ok ? "tag ok" : "tag bad", item.ok ? "ok" : "failed"));
+        if (!item.ok && item.error) { okCell.title = String(item.error); }
+        row.appendChild(okCell);
+        tbody.appendChild(row);
+      });
+      table.appendChild(tbody);
+      switchList.appendChild(table);
+    }
+  }
+
+  // Buckets are upper bounds in milliseconds. The last one collects the tail.
+  var LATENCY_BUCKETS = [10, 25, 50, 100, 250, 500, 1000, Infinity];
+  var LATENCY_LABELS = ["10", "25", "50", "100", "250", "500", "1k", "1k+"];
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svg(tag, attrs) {
+    var node = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs || {}).forEach(function (key) {
+      node.setAttribute(key, String(attrs[key]));
+    });
+    return node;
+  }
+
+  function renderLatencyChart(routes) {
+    var wrap = byId("latency-wrap");
+    clear(wrap);
+
+    var rows = (routes && Array.isArray(routes.routes)) ? routes.routes : [];
+    var samples = rows
+      .map(function (route) { return route.decision_latency_ms; })
+      .filter(isNum);
+
+    if (!samples.length) {
+      wrap.appendChild(el("div", "empty", "no decision latencies recorded yet"));
+      return;
+    }
+
+    var counts = LATENCY_BUCKETS.map(function () { return 0; });
+    samples.forEach(function (value) {
+      for (var i = 0; i < LATENCY_BUCKETS.length; i += 1) {
+        if (value <= LATENCY_BUCKETS[i]) { counts[i] += 1; return; }
+      }
+      counts[counts.length - 1] += 1;
+    });
+
+    var width = 360;
+    var height = 120;
+    var padBottom = 18;
+    var padTop = 12;
+    var slot = width / counts.length;
+    var barWidth = slot * 0.66;
+    var max = Math.max.apply(null, counts) || 1;
+    var plot = height - padBottom - padTop;
+
+    var chart = svg("svg", {
+      viewBox: "0 0 " + width + " " + height,
+      preserveAspectRatio: "none",
+      role: "img",
+      id: "latency-chart"
+    });
+    chart.setAttribute("aria-label",
+      "distribution of decision latency over the last " + samples.length + " routes");
+
+    counts.forEach(function (count, index) {
+      var barHeight = count > 0 ? Math.max(2, (count / max) * plot) : 0;
+      var x = index * slot + (slot - barWidth) / 2;
+      var y = padTop + plot - barHeight;
+
+      if (barHeight > 0) {
+        var bar = svg("rect", {
+          x: x.toFixed(1), y: y.toFixed(1),
+          width: barWidth.toFixed(1), height: barHeight.toFixed(1),
+          fill: index >= 6 ? "#d6a222" : "#58a6ff"
+        });
+        var title = svg("title", {});
+        title.textContent = count + " route(s) at or below " +
+          (isFinite(LATENCY_BUCKETS[index]) ? LATENCY_BUCKETS[index] + " ms" : "the top of the range");
+        bar.appendChild(title);
+        chart.appendChild(bar);
+
+        var value = svg("text", {
+          x: (x + barWidth / 2).toFixed(1),
+          y: (y - 2).toFixed(1),
+          "text-anchor": "middle",
+          class: "bar-value"
+        });
+        value.textContent = String(count);
+        chart.appendChild(value);
+      }
+
+      var label = svg("text", {
+        x: (index * slot + slot / 2).toFixed(1),
+        y: height - 5,
+        "text-anchor": "middle",
+        class: "axis-label"
+      });
+      label.textContent = LATENCY_LABELS[index];
+      chart.appendChild(label);
+    });
+
+    chart.appendChild(svg("line", {
+      x1: 0, y1: padTop + plot, x2: width, y2: padTop + plot,
+      stroke: "#2f3a48", "stroke-width": 1
+    }));
+
+    wrap.appendChild(chart);
+    var caption = el("div", "hint", "bucket upper bound in ms, " + samples.length + " routes");
+    caption.style.color = "#77838f";
+    caption.style.fontSize = "10px";
+    caption.style.textAlign = "center";
+    wrap.appendChild(caption);
+  }
+
+  // --- polling ----------------------------------------------------------
+
+  function schedule() {
+    if (state.timer !== null) { clearInterval(state.timer); }
+    state.timer = setInterval(function () {
+      if (!state.paused && !document.hidden) { refresh(); }
+    }, REFRESH_MS);
+  }
+
+  function setPaused(paused) {
+    state.paused = paused;
+    var button = byId("pause-btn");
+    button.dataset.paused = paused ? "true" : "false";
+    button.textContent = paused ? "Paused" : "Pause";
+    button.setAttribute("aria-pressed", paused ? "true" : "false");
+    byId("updated").textContent = paused
+      ? "auto-refresh paused"
+      : byId("updated").textContent;
+  }
+
+  byId("pause-btn").addEventListener("click", function () { setPaused(!state.paused); });
+  byId("refresh-btn").addEventListener("click", function () { refresh(); });
+
+  schedule();
+  refresh();
+})();
+</script>
+</body>
+</html>

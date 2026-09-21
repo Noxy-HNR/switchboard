@@ -1,0 +1,185 @@
+# Architecture
+
+## The shape of it
+
+```
+cptr / scripts / agents / CLI
+        |
+        v
+  Switchboard  :8002
+        |
+   +----+--------------------------------+
+   |                                     |
+ decision layer                    routing policy
+ (semantic judgments)              (judgments + facts)
+   |                                     |
+ jev -> local -> rules            registry, upstream, host
+   |                                     |
+   +----------------+--------------------+
+                    v
+            switch executor  --->  dashboard :9090  ---> restarts
+                    |                                    llama-server
+                    v
+            llama-server :10000  (one model resident)
+```
+
+Switchboard is a proxy and an advisor. It never starts `llama-server` itself:
+when a switch is warranted it asks the dashboard, which is the same path the
+Models tab and `model-manage.ps1` use. That keeps exactly one piece of code on
+this machine responsible for launching llama-server.
+
+## The one idea
+
+Three things are kept apart, because conflating them is what makes routers
+mysterious:
+
+| | What it is | Where it lives | Example |
+| --- | --- | --- | --- |
+| **Semantic judgment** | something only a model can read out of language | `decisions/` | "this is a medical question at difficulty 2.4" |
+| **Deterministic fact** | something code knows exactly | `registry.py`, `upstream.py`, `system.py` | "medgemma is not loaded; loading it took 27.6 s last time; it needs ~7.7 GB of host RAM" |
+| **Policy** | what to do given both | `policy.py` | "stay on the 9B: the gain does not cover the load" |
+
+A decision backend is never asked how much VRAM is free, and the policy never
+guesses what a request is about.
+
+## Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `config.py` | TOML + `.env` + environment; one `Config` object, no globals |
+| `privacy.py` | redaction, hashing, previews, cloud-state preparation |
+| `gguf.py` | GGUF header reader: native context, layer count, chat template |
+| `registry.py` | the model registry, built from `Config\models.json` + GGUF + `config/models.toml` + measurements |
+| `system.py` | host facts: free RAM (`GlobalMemoryStatusEx`), GPU (`nvidia-smi`), cached |
+| `upstream.py` | the only code that talks to llama-server: health, resident model, busy, router detection |
+| `executor.py` | how a switch is carried out (`DashboardExecutor`, `NullExecutor`) |
+| `decisions/schema.py` | **the questions**, shared verbatim by every backend, and the answer types |
+| `decisions/base.py` | the backend contract: availability, `BackendError`, contexts |
+| `decisions/jev.py` | TypeSafe Jev (cloud) |
+| `decisions/local.py` | System One Adapter over the resident llama.cpp model |
+| `decisions/logit.py` | experimental: first-token probabilities instead of generated JSON |
+| `decisions/rules.py` | deterministic heuristics; cannot fail |
+| `decisions/chain.py` | ordered fallback, budget, circuit breaker, cache |
+| `policy.py` | scoring, feasibility, guards, the sentence explaining the choice |
+| `router.py` | the service: decide, switch under a lock, record, supervise steps |
+| `proxy.py` | the OpenAI-compatible surface, streaming and all |
+| `api.py` | the supervisory API for agents |
+| `mcp_server.py` | the same supervision as MCP tools |
+| `store.py` | SQLite: routes, attempts, switches, step evals, measurements, sessions |
+| `diagnostics.py` | `doctor` |
+| `evals/` | fixtures, the eval runner, the benchmark tool |
+
+## The decision surface
+
+Four questions per request, asked in **one** call (the TypeSafe docs measure
+batching as an order of magnitude cheaper and faster):
+
+- `domain` — Choice over general / coding / medical / writing / research / system_ops
+- `difficulty` — Score over four described levels, 0 (trivial) to 3 (hard)
+- `tool_need` — Noul: does answering require acting outside the conversation?
+- `ambiguity` — Noul: would a competent assistant have to ask first?
+
+Four more for a finished agent step: `outcome` (Choice), `progress`,
+`complete`, `needs_new_approach` (Nouls). The *recommendation* — continue,
+retry, retry_different, escalate, ask_user, stop_complete, stop_failed — is
+computed in code from those judgments plus hard facts, because "exit code 1" is
+not an opinion. A non-zero exit code overrides a model that claims success, and
+the response says so (`facts_overrode_model`).
+
+The question text lives in `decisions/schema.py` and is shared verbatim by all
+backends, so their answers are comparable and the eval can put them side by side.
+
+## The backend chain
+
+`jev -> local -> rules`, first real answer wins.
+
+- **Budget, not just timeouts.** The whole semantic layer gets
+  `decisions.budget_ms` (4 s). Each backend gets the smaller of its own timeout
+  and what is left. The floor (`rules`) runs even when the budget is spent,
+  because a decision must exist.
+- **Breaker.** Repeated failures park a backend for a cooldown. A *refusal*
+  ("no API key", "resident model too slow") is not a failure and never opens it.
+- **Cache.** Identical question and text within the TTL reuses the answer.
+- **Floor.** `rules` cannot fail and is forced to the end of the chain even if
+  the configuration forgets it.
+
+When is the local backend allowed to run? Only when llama-server is healthy,
+**idle** (`--parallel 1` means a decision call would queue behind a real
+generation) and the resident model is fast enough to be worth asking
+(`min_resident_gen_tps`, default 15 tok/s — a 5 tok/s MedGemma would spend more
+time deciding than it saves).
+
+## The policy
+
+For each model that is feasible for this request:
+
+```
+utility(m) = value_of_quality_s * P(good answer | m, task) - seconds_of_waiting(m)
+seconds_of_waiting(m) = switch_cost(m) + prompt_time(m) + generation_time(m)
+P(good answer) = sigmoid(capability_slope * (ceiling(m, domain) - difficulty))
+```
+
+Quality is expressed **in seconds** so it can be compared with waiting, and
+`value_of_quality_s` (default 90) is the single knob that says how much a better
+answer is worth. `ceiling(m, domain)` is a prior from `config/models.toml` — an
+editable policy parameter, clearly not a benchmark. Everything else is measured:
+`switch_cost` from observed loads, `generation_time` from observed tokens/sec.
+
+**Feasibility is checked before scoring**, and infeasibility is a hard no:
+
+- context: estimated prompt + expected answer must fit the model's configured
+  context (a 25k-token conversation simply cannot use the 27B's 20480);
+- tools: a request carrying tool definitions never goes to a model whose chat
+  template cannot express them (MedGemma);
+- host RAM: a model whose estimated CPU-resident share does not fit gets a
+  warning (default) or is excluded (`ram_guard = "block"`).
+
+**Then three guards stand between a preference and a restart:**
+
+1. `hysteresis_seconds` — utility must beat staying put by a margin;
+2. `min_quality_gain` — and the answer must actually get better;
+3. `min_dwell_seconds`, `never_switch_when_busy`, `utility_max_tokens` — and the
+   moment has to be right: not seconds after the last switch, not while
+   llama-server is generating for someone else, and never for a short
+   non-streaming utility call (cptr's chat-title requests time out at 15 s).
+
+When a guard blocks a switch, that is recorded, not discarded:
+`would_switch_to` plus `blocked_by` end up in the database and in the response
+headers, which is what makes shadow mode useful.
+
+**Stickiness** comes from the conversation's running difficulty: the policy uses
+`max(instant difficulty, session EWMA)`, so one short follow-up in a hard
+conversation does not drag it back to the small model and then immediately back
+up again.
+
+## Streaming
+
+Upstream bytes are relayed as they arrive; nothing is buffered. Token counts are
+recovered by watching the bytes go past (`UsageWatcher`) — real `usage` when the
+client asked for it, otherwise counted content deltas — because rewriting the
+client's request to add `stream_options` would change what the client receives.
+
+While a model loads, a streaming request gets SSE **comment** lines
+(`: switchboard preparing a model (10s)`), which every compliant parser ignores,
+including cptr's. A 25-second load looks like a slow start instead of a dead
+socket.
+
+## Deliberate deviations from the brief
+
+| Brief | Built | Why |
+| --- | --- | --- |
+| "Open WebUI / Open Terminal MCP integration" | documented as NOT_APPLICABLE | Neither is installed on this machine ([DISCOVERY.md](DISCOVERY.md)) |
+| "`C:\AI\start-ai.ps1`" | `C:\AI\start.ps1` | that is the real filename |
+| Switchboard restarts llama-server | it asks the dashboard to | one code path for launching llama-server, and `Build-LlamaArgs.ps1` stays the single source of truth for arguments |
+| llama.cpp router mode as the multi-model mechanism | detected, reported, not used | it would change the launch path the brief asks to preserve; see [DEPENDENCY-VERIFICATION.md](DEPENDENCY-VERIFICATION.md#why-router-mode-is-not-used) |
+| Local fallback = System One Adapter | that, plus an availability gate | on this machine the adapter's cost depends entirely on which model is resident, so it refuses when the resident model is slow or busy |
+| Experimental logit backend | implemented, **off** | its probabilities are the model's next-token distribution, which is meaningful but not calibrated; it stays off until the eval says otherwise ([EXPERIMENT-LOGITS.md](EXPERIMENT-LOGITS.md)) |
+| Shadow mode as the default | `mode = "active"` | you chose auto-switching through the dashboard; shadow remains one setting away, and pass-through traffic is still shadow-evaluated |
+
+## If the stack moves to router mode
+
+`upstream.py` already detects it (`/v1/models` entries carrying a `status`
+object). To use it, add a `RouterExecutor` to `executor.py` that posts to
+llama-server's own `/models/load` and returns the same `SwitchResult`; the
+policy, registry and proxy need no changes. `build_executor()` would pick it
+when `UpstreamStatus.router_mode` is true.
