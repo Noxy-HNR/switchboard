@@ -10,14 +10,28 @@ on it.
 Switchboard is entirely local: the logit and rule backends never open an
 outbound connection, and the local adapter talks only to `127.0.0.1:10000`.
 
-When Jev is enabled, one request per decision carries a small JSON object:
+When Jev is enabled, one request per decision carries a small JSON object
+holding only the fields a question names (`decisions/state.py`, shared by every
+backend):
 
 ```json
 {"request": {"message": "<latest user turn>",
-             "previous_message": "<the one before it>",
-             "available_tools": ["read_file", "run_command"],
-             "turn": 3, "has_images": false}}
+             "previous_message": "<the one before it, when there is one>",
+             "has_images": true}}
 ```
+
+`previous_message` and `has_images` are left out when there is nothing to say.
+The system prompt, the client's tool names, the turn number, the session id and
+the token estimate are never sent: no question is about them, and the policy
+reads them directly on this machine.
+
+A finished agent step sends `task.goal`, `step.action`, `step.result`,
+`step.attempt`, `step.exit_code` and up to three `earlier_attempts`, through the
+same steps below. One exception: when the step's **result** is itself pasted
+machine output (the usual case for a terminal command), Jev is not asked at
+all. Minimizing it would leave the step questions judging a placeholder in
+place of the evidence, so the step is declined as `skipped` and judged by a
+local backend that can read the real output.
 
 Before any of that is assembled, every string goes through three steps:
 
@@ -28,8 +42,14 @@ Before any of that is assembled, every string goes through three steps:
 
    ```
    Why does this fail?
-   [Python traceback kept local: 23 lines]
+   [pasted Python traceback omitted: 23 lines]
    ```
+
+   The wording is for a model that reads literally: "pasted ... omitted" says
+   the user did attach the content, and the question text tells the model such
+   a marker stands for content the assistant will see in full. So a request
+   is not scored as ambiguous, or as needing a tool, merely because its
+   evidence was withheld from the router.
 
    The contents never leave; the user's own words around them do, because
    those are what the routing judgments are actually about. The detectors err
@@ -45,17 +65,20 @@ Before any of that is assembled, every string goes through three steps:
    `"key": "value"` pairs whose name looks like a credential, `.env`-shaped
    lines, email addresses and card-shaped digit runs.
 3. **One shared budget.** `privacy.max_state_chars` (1500 by default) caps the
-   whole state, not each field: the current message is spent first, then the
-   previous one, then tool names. Long text keeps both ends, because the topic
-   is at the start and the question at the end.
+   whole state, not each field, in fixed shares: the previous message gets at
+   most 300 characters and the current message the rest; for a step, the goal,
+   the action and the earlier attempts are each capped and the result gets
+   everything they leave. A field that comes out empty is dropped rather than
+   sent as an empty string. Long text keeps both ends, because the topic is at
+   the start and the question at the end.
 
 Which *kinds* of content were withheld is recorded in the decision's notes -
 "kept local: Python traceback", "redacted: openai-key, email" - and the content
 itself is recorded nowhere.
 
-Only the latest turn goes: not the conversation, not file contents, not tool
-*results*, only tool **names**. A 40-message conversation contributes its last
-two user turns and a count.
+Only the latest turn goes, plus the one before it: not the conversation, not
+file contents, not tool definitions or results. A 40-message conversation
+contributes its last two user turns.
 
 An earlier version refused to call Jev at all whenever a message looked like a
 dump (any code fence, or more than eight lines). That also kept dumps local,

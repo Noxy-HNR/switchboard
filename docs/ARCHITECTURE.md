@@ -55,6 +55,7 @@ guesses what a request is about.
 | `executor.py` | how a switch is carried out (`DashboardExecutor`, `NullExecutor`) |
 | `decisions/schema.py` | **the questions**, shared verbatim by every backend, and the answer types |
 | `decisions/base.py` | the backend contract: availability, `BackendError`, contexts |
+| `decisions/state.py` | the one state every backend sends: the fields the questions name, with fixed budget shares |
 | `decisions/jev.py` | TypeSafe Jev (cloud) |
 | `decisions/local.py` | System One Adapter over the resident llama.cpp model |
 | `decisions/logit.py` | experimental: first-token probabilities instead of generated JSON |
@@ -87,21 +88,58 @@ not an opinion. A non-zero exit code overrides a model that claims success, and
 the response says so (`facts_overrode_model`).
 
 The question text lives in `decisions/schema.py` and is shared verbatim by all
-backends, so their answers are comparable and the eval can put them side by side.
+backends, and so is the **state** (`decisions/state.py`): every backend sends
+the same fields, under the same names the questions quote. Identical questions
+over differently named state would not be comparable answers.
+
+The state holds only what a question names. `request.message`, plus
+`request.previous_message` and `request.has_images` when present; for a step,
+`task.goal`, `step.action`, `step.result`, `step.attempt`, `step.exit_code` and
+`earlier_attempts`. The system prompt, the client's tool roster and the turn
+number are facts the policy reads directly, not evidence for any question, so
+no model sees them. A shared character budget is split in fixed shares: the
+previous message is capped at 300 characters and the current message gets the
+rest; the step result gets whatever goal, action and earlier attempts (each
+capped) leave. A field that cleans to nothing is dropped rather than sent as
+an empty string a literal reader might take as evidence. How the text is
+cleaned is the backend's business: Jev minimizes and redacts
+([PRIVACY.md](PRIVACY.md)), the local backends only truncate.
+
+Every decision says whether its probabilities are `calibrated`. Only Jev's are
+(it is trained for that); the adapter's discrete mode has none, and the logit
+backend's are a next-token distribution. The policy weighs a distribution only
+when it is calibrated and otherwise uses the point answer.
 
 ## The backend chain
 
-`jev -> local -> rules`, first real answer wins.
+`jev -> local -> rules`, first real answer wins. The logit backend is
+implemented but off ([EXPERIMENT-LOGITS.md](EXPERIMENT-LOGITS.md)).
 
+- **Fast path first.** The rules engine answers in under a millisecond; when it
+  is confident, the request is easy, and no must-confirm domain (medical) holds
+  even a 20% share, its answer stands and no model is asked.
 - **Budget, not just timeouts.** The whole semantic layer gets
-  `decisions.budget_ms` (4 s). Each backend gets the smaller of its own timeout
+  `decisions.budget_ms` (6 s). Jev's own retry sequence is capped at half of it,
+  so a failing provider still leaves time for the local backend. Each backend gets the smaller of its own timeout
   and what is left. The floor (`rules`) runs even when the budget is spent,
   because a decision must exist.
 - **Breaker.** Repeated failures park a backend for a cooldown. A *refusal*
   ("no API key", "resident model too slow") is not a failure and never opens it.
-- **Cache.** Identical question and text within the TTL reuses the answer.
+- **Cache.** Identical question, text and resident model within the TTL reuses
+  the answer. Keys are SHA-256 digests (no text is kept as a key) and entries
+  are copied in and out, so a caller cannot mutate a cached decision.
 - **Floor.** `rules` cannot fail and is forced to the end of the chain even if
   the configuration forgets it.
+
+The local backend runs the System One Adapter in **prompted** mode
+(`structured_outputs=False`) with the answer schema always attached as a
+sampling grammar. llama.cpp uses `response_format` only as a grammar and never
+shows the schema to the model, so in the adapter's native mode the questions,
+which live in the schema's descriptions, would never reach the model. Prompted
+mode has the adapter put them in its single system message, and its own trace
+records exactly what the model saw. A reply cut off at `max_tokens` is refused
+as invalid (not retried, not counted as an outage), and token counts
+llama-server did not report are left out rather than recorded as zero.
 
 When is the local backend allowed to run? Only when llama-server is healthy,
 **idle** (`--parallel 1` means a decision call would queue behind a real
@@ -114,13 +152,21 @@ time deciding than it saves).
 For each model that is feasible for this request:
 
 ```
-utility(m) = value_of_quality_s * P(good answer | m, task) - seconds_of_waiting(m)
+utility(m) = value_of_quality_s * E[P(good answer | m)] - seconds_of_waiting(m)
+E[P(good answer | m)] = sum over domain d, level l of w(d) * w(l) * q(m, d, l)
+q(m, d, l) = sigmoid(capability_slope * (ceiling(m, d) - l))
 seconds_of_waiting(m) = switch_cost(m) + prompt_time(m) + generation_time(m)
-P(good answer) = sigmoid(capability_slope * (ceiling(m, domain) - difficulty))
 ```
 
+The weights `w` are the calibrated distributions when the backend has them
+(Jev): a request that is 55% general and 45% medical is scored as exactly that,
+and each difficulty level is scored at its own level before weighting, because
+a Score does not license interpolating between levels. Without a calibrated
+distribution the point answer gets all the weight. Either way, a split that
+mattered is named in the reason ("general 55%, medical 45%").
+
 Quality is expressed **in seconds** so it can be compared with waiting, and
-`value_of_quality_s` (default 90) is the single knob that says how much a better
+`value_of_quality_s` (default 400) is the single knob that says how much a better
 answer is worth. `ceiling(m, domain)` is a prior from `config/models.toml` — an
 editable policy parameter, clearly not a benchmark. Everything else is measured:
 `switch_cost` from observed loads, `generation_time` from observed tokens/sec.

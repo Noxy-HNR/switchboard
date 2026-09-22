@@ -4,14 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-import httpx
 import pytest
 
 from switchboard.config import Config
 from switchboard.decisions.base import TaskContext, BackendFacts, BackendError
 from switchboard.privacy import redact, truncate_middle
 from switchboard.proxy import _stream_response, _stream_with_keepalive
-from conftest import DEEP, FAST, FakeExecutor, FakeLlama, build_router
+from conftest import DEEP, FakeExecutor, FakeLlama
 from test_proxy import Harness, chat_body
 from test_jev_backend import make_config, responding, TASK_BODY, body_of
 from switchboard.decisions.jev import JevBackend
@@ -130,7 +129,7 @@ async def test_cloud_never_receives_a_terminal_dump():
         assert private not in sent
         assert "private exception detail" not in sent
         assert "Why does this fail?" in sent
-        assert "Python traceback kept local" in sent
+        assert "[pasted Python traceback omitted" in sent
         assert any(note.startswith("kept local:") for note in decision.notes)
     finally:
         await backend.aclose()

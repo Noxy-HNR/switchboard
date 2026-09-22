@@ -46,8 +46,9 @@ import contextlib
 import json
 import logging
 import time
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Iterable
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Request
@@ -524,13 +525,13 @@ async def _complete(router: Router, plan: RoutedPlan, body: dict[str, Any]):
         ):
             gen_tps = float(timings["predicted_per_second"])
 
-    error: str | None = None
+    failure: str | None = None
     if response.status_code >= 400:
         # The client gets llama-server's body verbatim below; the database gets
         # only the status, because that body can quote the prompt back.
-        error = f"upstream returned HTTP {response.status_code}"
+        failure = f"upstream returned HTTP {response.status_code}"
     elif payload is None:
-        error = "upstream returned a non-JSON response"
+        failure = "upstream returned a non-JSON response"
 
     router.record_completion(
         plan.route_id,
@@ -540,7 +541,7 @@ async def _complete(router: Router, plan: RoutedPlan, body: dict[str, Any]):
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         gen_tps=gen_tps,
-        error=error,
+        error=failure,
         model_id=plan.model_id,
     )
 
@@ -555,7 +556,7 @@ async def _complete(router: Router, plan: RoutedPlan, body: dict[str, Any]):
 
 async def _stream_response(
     router: Router, plan: RoutedPlan, body: dict[str, Any]
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes, None]:
     """Relay upstream's stream byte for byte, and record how it ended."""
     watcher = UsageWatcher()
     started = time.perf_counter()

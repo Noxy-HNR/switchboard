@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
@@ -25,7 +24,7 @@ from switchboard.decisions.schema import StepDecision
 from switchboard.router import recommend_next
 from switchboard.store import Store
 
-from conftest import DEEP, FAST, MED, FakeExecutor, FakeLlama, build_router
+from conftest import DEEP, FAST, FakeExecutor, FakeLlama, build_router
 
 SECRET_PROMPT = "Deploy with OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz012345 please"
 
@@ -319,7 +318,7 @@ async def test_a_non_zero_exit_code_overrides_a_model_that_says_success() -> Non
     step = StepContext(goal="build", action="cmake --build .", result="Build finished.", exit_code=1)
     decision = StepDecision(outcome="success", progress=0.9, complete=0.9, backend="fixture")
 
-    recommendation, rationale, overrode = recommend_next(step, decision)
+    recommendation, _rationale, overrode = recommend_next(step, decision)
 
     assert overrode is True
     assert recommendation in {"retry", "retry_different"}

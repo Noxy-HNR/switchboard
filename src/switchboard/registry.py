@@ -271,7 +271,8 @@ def build_registry(
     for filename in filenames:
         path = on_disk.get(filename, models_dir / filename)
         exists = filename in on_disk
-        model_settings = settings.get(filename) if isinstance(settings.get(filename), dict) else {}
+        raw_settings = settings.get(filename)
+        model_settings: dict[str, Any] = raw_settings if isinstance(raw_settings, dict) else {}
         model_overlay = overlay.get(filename, {})
 
         if not exists:

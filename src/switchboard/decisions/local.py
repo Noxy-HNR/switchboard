@@ -116,16 +116,25 @@ DISCRETE_NOTE: Final = (
     "artefact of the mode, not a measurement)"
 )
 
-# The same state budget the cloud backend spends, reused here for a different
-# reason: not exposure, but the prompt-processing seconds a long request costs on
-# a partially offloaded model.
+_ERROR_MESSAGE_CHARS: Final = 300
 
 
 def _truncate(text: str, limit: int) -> str:
-    """The local backends' cleaning step: size only, nothing withheld."""
+    """The local backends' cleaning step: size only, nothing withheld.
+
+    The state budget is the cloud backend's, reused here for a different reason:
+    not exposure, but the prompt-processing seconds a long request costs on a
+    partially offloaded model.
+    """
     return truncate_middle(text, limit)
 
-_ERROR_MESSAGE_CHARS: Final = 300
+
+def _noul(instructions: str, criteria: dict[str, str]) -> Noul:
+    return Noul(
+        instructions=instructions,
+        criteria={"true": criteria["true"], "false": criteria["false"]},
+    )
+
 
 # --- the questions ----------------------------------------------------------
 # Built once from the shared constants. The adapter revalidates and dumps them on
@@ -134,23 +143,17 @@ _ERROR_MESSAGE_CHARS: Final = 300
 TASK_QUESTIONS: Final[Questions] = {
     "domain": Choice(instructions=DOMAIN_INSTRUCTIONS, criteria=dict(DOMAIN_CRITERIA)),
     "difficulty": Score(instructions=DIFFICULTY_INSTRUCTIONS, criteria=list(DIFFICULTY_CRITERIA)),
-    "tool_need": Noul(instructions=TOOL_NEED_INSTRUCTIONS, criteria=dict(TOOL_NEED_CRITERIA)),
-    "ambiguity": Noul(instructions=AMBIGUITY_INSTRUCTIONS, criteria=dict(AMBIGUITY_CRITERIA)),
+    "tool_need": _noul(TOOL_NEED_INSTRUCTIONS, TOOL_NEED_CRITERIA),
+    "ambiguity": _noul(AMBIGUITY_INSTRUCTIONS, AMBIGUITY_CRITERIA),
 }
 
 STEP_QUESTIONS: Final[Questions] = {
     "outcome": Choice(
         instructions=STEP_OUTCOME_INSTRUCTIONS, criteria=dict(STEP_OUTCOME_CRITERIA)
     ),
-    "progress": Noul(
-        instructions=STEP_PROGRESS_INSTRUCTIONS, criteria=dict(STEP_PROGRESS_CRITERIA)
-    ),
-    "complete": Noul(
-        instructions=STEP_COMPLETE_INSTRUCTIONS, criteria=dict(STEP_COMPLETE_CRITERIA)
-    ),
-    "needs_new_approach": Noul(
-        instructions=STEP_NEW_APPROACH_INSTRUCTIONS, criteria=dict(STEP_NEW_APPROACH_CRITERIA)
-    ),
+    "progress": _noul(STEP_PROGRESS_INSTRUCTIONS, STEP_PROGRESS_CRITERIA),
+    "complete": _noul(STEP_COMPLETE_INSTRUCTIONS, STEP_COMPLETE_CRITERIA),
+    "needs_new_approach": _noul(STEP_NEW_APPROACH_INSTRUCTIONS, STEP_NEW_APPROACH_CRITERIA),
 }
 
 

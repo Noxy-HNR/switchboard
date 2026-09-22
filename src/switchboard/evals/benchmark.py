@@ -245,7 +245,8 @@ async def measure_generation(
         sample.error = f"llama-server answered with a {type(payload).__name__}, not an object"
         return sample.describe()
 
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    raw_usage = payload.get("usage")
+    usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
     timings = payload.get("timings")
     prompt_tokens = _count(usage.get("prompt_tokens"))
     completion_tokens = _count(usage.get("completion_tokens"))

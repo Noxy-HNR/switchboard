@@ -15,7 +15,7 @@ from switchboard.config import Config
 from switchboard.evals.benchmark import measure_generation, measure_switch, run_benchmark
 from switchboard.store import Store
 
-from conftest import DEEP, FAST, FakeExecutor, FakeLlama, build_router
+from conftest import FAST, FakeExecutor, FakeLlama, build_router
 
 
 async def close(router) -> None:

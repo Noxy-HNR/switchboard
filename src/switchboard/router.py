@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -30,15 +30,20 @@ from switchboard.decisions.chain import DecisionChain, DecisionResult
 from switchboard.decisions.schema import Recommendation, StepDecision, TaskDecision
 from switchboard.executor import SwitchExecutor, SwitchResult
 from switchboard.policy import (
+    VIRTUAL_MODELS,
     Policy,
     RouteDecision,
     RouteRequest,
     RoutingPolicy,
     SessionState,
-    VIRTUAL_MODELS,
 )
-from switchboard.registry import Measurement, ModelEntry, RegistrySnapshot, build_registry
-from switchboard.store import Store
+from switchboard.registry import (
+    Measurement,
+    ModelEntry,
+    RegistrySnapshot,
+    build_registry,
+)
+from switchboard.store import MeasurementMetric, Store, SwitchTrigger
 from switchboard.system import HostFacts
 from switchboard.upstream import LlamaClient, UpstreamStatus
 
@@ -472,11 +477,15 @@ class Router:
         """An automatic switch, decided by the policy."""
         return await self._guarded_switch(target, trigger="auto")
 
-    async def switch_to(self, target: ModelEntry, *, trigger: str = "manual") -> SwitchResult:
+    async def switch_to(
+        self, target: ModelEntry, *, trigger: SwitchTrigger = "manual"
+    ) -> SwitchResult:
         """An explicit switch, from the CLI or the agent API."""
         return await self._guarded_switch(target, trigger=trigger)
 
-    async def _guarded_switch(self, target: ModelEntry, *, trigger: str) -> SwitchResult:
+    async def _guarded_switch(
+        self, target: ModelEntry, *, trigger: SwitchTrigger
+    ) -> SwitchResult:
         """The one path to a restart, with every guard, under the lock.
 
         Automatic and explicit switches share it deliberately: they used to have
@@ -525,7 +534,7 @@ class Router:
             return result
 
     async def _run_to_completion(
-        self, target: ModelEntry, from_model: str | None, *, trigger: str
+        self, target: ModelEntry, from_model: str | None, *, trigger: SwitchTrigger
     ) -> SwitchResult:
         """Run the executor, holding the lock until the restart really ends.
 
@@ -669,7 +678,7 @@ class Router:
         for attempt in chain.attempts:
             usage = attempt.usage or {}
             input_tokens = usage.get("input_tokens")
-            cost = usage.get("est_cost_usd")
+            cost: float | None = usage.get("est_cost_usd")
             if cost is None and "est_cost_usd_micro" in usage:
                 cost = usage["est_cost_usd_micro"] / 1_000_000
             if cost is None and attempt.backend == "jev" and input_tokens:
@@ -719,7 +728,9 @@ class Router:
         if model_id and gen_tps and gen_tps > 0 and (tokens_out or 0) >= 32:
             self._record_measurement(model_id, "gen_tps", gen_tps, source="traffic")
 
-    def _record_measurement(self, model_id: str, metric: str, value: float, *, source: str) -> None:
+    def _record_measurement(
+        self, model_id: str, metric: MeasurementMetric, value: float, *, source: str
+    ) -> None:
         if self._store is None:
             return
         with contextlib.suppress(Exception):
@@ -728,7 +739,7 @@ class Router:
             )
         self.invalidate_registry()
 
-    def _record_switch(self, result: SwitchResult, *, trigger: str) -> None:
+    def _record_switch(self, result: SwitchResult, *, trigger: SwitchTrigger) -> None:
         if self._store is None or result.noop:
             return
         with contextlib.suppress(Exception):

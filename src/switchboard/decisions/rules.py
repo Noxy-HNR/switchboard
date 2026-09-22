@@ -34,6 +34,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from typing import cast
 
 from switchboard.config import RulesConfig
 from switchboard.decisions.base import (
@@ -564,15 +565,15 @@ def task_signals(context: TaskContext) -> TaskSignals:
     for name in context.tool_names:
         parts = {part for part in _NON_WORD.sub(" ", name.lower()).split() if part}
         for part in sorted(parts):
-            domain = _TOOL_HINTS.get(part)
-            if domain is None or tool_budget <= 0:
+            hinted = _TOOL_HINTS.get(part)
+            if hinted is None or tool_budget <= 0:
                 continue
-            if lexically_supported and domain not in lexically_supported:
+            if lexically_supported and hinted not in lexically_supported:
                 continue
             awarded = min(_TOOL_HINT_WEIGHT, tool_budget)
-            scores[domain] += awarded
+            scores[hinted] += awarded
             tool_budget -= awarded
-            tool_hits[domain] = tool_hits.get(domain, 0) + 1
+            tool_hits[hinted] = tool_hits.get(hinted, 0) + 1
 
     content_tokens = {token for token in tokens if not token.isdigit()}
     greeting_only = bool(content_tokens) and content_tokens <= _GREETINGS and len(words) <= 6
@@ -891,13 +892,13 @@ def _outcome_probabilities(outcome: StepOutcome, strength: float) -> dict[str, f
     means - so the residual is not spread evenly.
     """
     strength = max(0.3, min(0.9, strength))
-    probabilities = {name: 0.0 for name in STEP_OUTCOMES}
+    probabilities: dict[str, float] = {name: 0.0 for name in STEP_OUTCOMES}
     probabilities[outcome] = strength
     rest = 1.0 - strength
-    others = [name for name in STEP_OUTCOMES if name != outcome]
+    others: list[StepOutcome] = [name for name in STEP_OUTCOMES if name != outcome]
     if outcome != "unclear":
         probabilities["unclear"] = rest * 0.5
-        remaining = [name for name in others if name != "unclear"]
+        remaining: list[StepOutcome] = [name for name in others if name != "unclear"]
     else:
         remaining = others
     share = (rest - probabilities["unclear"] if outcome != "unclear" else rest) / len(remaining)
@@ -941,7 +942,9 @@ class RulesBackend:
     def _task(self, context: TaskContext, timer: Stopwatch) -> TaskDecision:
         signals = task_signals(context)
         probabilities = _normalise(signals.scores)
-        domain = max(probabilities, key=lambda key: (probabilities[key], key == "general"))
+        domain = cast(
+            Domain, max(probabilities, key=lambda key: (probabilities[key], key == "general"))
+        )
         confidence = _margin_confidence(probabilities)
 
         lowered = (context.message or "").lower()

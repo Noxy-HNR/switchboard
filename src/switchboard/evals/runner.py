@@ -28,9 +28,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
-from switchboard.config import Config, PROJECT_ROOT, load_config
+from switchboard.config import PROJECT_ROOT, Config, load_config
 from switchboard.decisions.base import BackendFacts, StepContext, TaskContext
 from switchboard.decisions.chain import DecisionChain
 from switchboard.decisions.factory import build_backend
@@ -264,7 +264,7 @@ async def evaluate_backend(
             _accumulate(task_report, decision, config)
 
         for fixture in step_fixtures:
-            context = StepContext(
+            step_context = StepContext(
                 goal=fixture["goal"],
                 action=fixture["action"],
                 result=fixture["result"],
@@ -273,12 +273,12 @@ async def evaluate_backend(
                 previous_attempts=list(fixture.get("previous_attempts") or []),
             )
             started = time.perf_counter()
-            result = await chain.decide_step(context, facts, use_cache=False)
+            step_result = await chain.decide_step(step_context, facts, use_cache=False)
             elapsed = (time.perf_counter() - started) * 1000
-            decision = result.decision
-            error = None if decision.backend == backend_name else _first_error(result)
-            recommendation, _, overrode = recommend_next(context, decision)
-            checks = score_step(fixture, decision, recommendation) if error is None else {}
+            step_decision = step_result.decision
+            error = None if step_decision.backend == backend_name else _first_error(step_result)
+            recommendation, _, overrode = recommend_next(step_context, step_decision)
+            checks = score_step(fixture, step_decision, recommendation) if error is None else {}
             step_report.results.append(
                 FixtureResult(
                     fixture_id=fixture["id"],
@@ -286,19 +286,19 @@ async def evaluate_backend(
                     ok=all(value for value in checks.values() if value is not None),
                     checks=checks,
                     observed={
-                        "outcome": decision.outcome,
-                        "progress": round(decision.progress, 2),
-                        "complete": round(decision.complete, 2),
-                        "needs_new_approach": round(decision.needs_new_approach, 2),
+                        "outcome": step_decision.outcome,
+                        "progress": round(step_decision.progress, 2),
+                        "complete": round(step_decision.complete, 2),
+                        "needs_new_approach": round(step_decision.needs_new_approach, 2),
                         "recommendation": recommendation,
                         "facts_overrode_model": overrode,
                     },
                     latency_ms=elapsed,
-                    backend=decision.backend,
+                    backend=step_decision.backend,
                     error=error,
                 )
             )
-            _accumulate(step_report, decision, config)
+            _accumulate(step_report, step_decision, config)
     finally:
         await chain.aclose()
 
@@ -478,7 +478,7 @@ async def run_eval(
                     fixture,
                     _decision_from_observed(result),
                 )
-                for fixture, result in zip(task_fixtures, task_report.results)
+                for fixture, result in zip(task_fixtures, task_report.results, strict=True)
                 if result.error is None
             ]
             simulations[name] = simulate_switching(

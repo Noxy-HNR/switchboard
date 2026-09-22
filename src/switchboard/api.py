@@ -18,7 +18,7 @@ is the reference. Two conventions are worth stating:
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -129,7 +129,7 @@ def build_api_router(get_router) -> APIRouter:
     async def registry(request: Request, refresh: bool = False) -> dict[str, Any]:
         router: Router = get_router(request)
         snapshot = router.registry(refresh=refresh)
-        upstream_status, resident = await router.facts()
+        _upstream, resident = await router.facts()
         return {
             "resident": resident.id if resident else None,
             "active_in_stack_config": snapshot.active_model_file,

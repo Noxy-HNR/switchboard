@@ -18,16 +18,10 @@ one. Exposing Switchboard beyond loopback would need real credentials.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
 from starlette.responses import JSONResponse
-
-Scope = dict[str, Any]
-Message = dict[str, Any]
-Receive = Callable[[], Awaitable[Message]]
-Send = Callable[[Message], Awaitable[None]]
-ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024
 _BODY_METHODS = {"POST", "PUT", "PATCH"}

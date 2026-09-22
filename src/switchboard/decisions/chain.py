@@ -24,6 +24,7 @@ import copy
 import hashlib
 import json
 import time
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
@@ -429,6 +430,7 @@ class DecisionChain:
         is_floor: bool,
     ) -> Any:
         """Invoke one backend under the smaller of its timeout and the budget."""
+        coroutine: Coroutine[Any, Any, TaskDecision | StepDecision]
         if kind == "task":
             coroutine = backend.decide_task(context, facts)  # type: ignore[arg-type]
         else:

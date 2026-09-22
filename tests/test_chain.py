@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from switchboard.config import Config
 from switchboard.decisions.base import (

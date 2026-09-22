@@ -7,7 +7,7 @@ model it would use and must not restart anything unless explicitly told to.
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 import pytest
 
