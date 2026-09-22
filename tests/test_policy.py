@@ -554,3 +554,16 @@ def test_the_session_floor_applies_to_every_level() -> None:
     floored = route(config, easy, resident=DEEP, session=session, now=10_000.0)
     assert floored.selected is DEEP
     assert floored.difficulty_used >= 2.8
+
+
+@pytest.mark.parametrize(
+    ("difficulty", "ceiling", "words"),
+    [(2.4, 2.0, "is above"), (2.0, 2.0, "sits at"), (2.04, 2.0, "sits at"), (1.2, 2.0, "sits within")],
+)
+def test_the_reason_states_difficulty_against_ceiling_as_it_is(
+    difficulty: float, ceiling: float, words: str
+) -> None:
+    """A switch at the ceiling once read "difficulty 2.0 is above ... 2.0 ceiling"."""
+    from switchboard.policy import _against_ceiling
+
+    assert _against_ceiling(difficulty, ceiling) == words

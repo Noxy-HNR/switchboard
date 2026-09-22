@@ -645,8 +645,8 @@ class RoutingPolicy:
         others = [candidate for candidate in feasible if candidate.model.id != best.model.id]
         detail = (
             f"Stayed on {best.model.id}: already loaded, and a {estimate.domain} task at "
-            f"difficulty {estimate.difficulty:.1f}{_split_note(estimate)} sits within its "
-            f"{ceiling:.1f} ceiling."
+            f"difficulty {estimate.difficulty:.1f}{_split_note(estimate)} "
+            f"{_against_ceiling(estimate.difficulty, ceiling)} its {ceiling:.1f} ceiling."
         )
         if others:
             runner_up = max(others, key=lambda candidate: candidate.utility)
@@ -670,13 +670,34 @@ class RoutingPolicy:
                 f"Loading {best.model.id}: nothing usable is resident, and its {ceiling:.1f} "
                 f"ceiling covers this {domain} task at difficulty {difficulty:.1f}{split}."
             )
+        resident_ceiling = resident_candidate.model.capability_for(domain)
         return (
             f"Switching to {best.model.id}: this {domain} task at difficulty {difficulty:.1f}"
-            f"{split} is above {resident_candidate.model.id}'s "
-            f"{resident_candidate.model.capability_for(domain):.1f} ceiling. Expected quality "
+            f"{split} {_against_ceiling(difficulty, resident_ceiling)} "
+            f"{resident_candidate.model.id}'s {resident_ceiling:.1f} ceiling. Expected quality "
             f"{resident_candidate.quality:.2f} -> {best.quality:.2f} is worth the "
             f"~{best.switch_s:.0f}s load."
         )
+
+
+# Both numbers are printed to one decimal, so a gap smaller than that reads as "at".
+_CEILING_TOLERANCE = 0.05
+
+
+def _against_ceiling(difficulty: float, ceiling: float) -> str:
+    """How a difficulty sits against a ceiling, in words that match the printed numbers.
+
+    The policy switches on expected quality, not on crossing a ceiling, so a
+    switch can be right for a task at or just under the resident model's ceiling
+    (the quality curve is steep there), and staying can be right for one above
+    it when nothing better is worth loading. The reason states the relationship
+    as it is rather than the one that would explain the choice by itself.
+    """
+    if difficulty > ceiling + _CEILING_TOLERANCE:
+        return "is above"
+    if difficulty >= ceiling - _CEILING_TOLERANCE:
+        return "sits at"
+    return "sits within"
 
 
 # --- calibrated distributions ---------------------------------------------------

@@ -468,3 +468,36 @@ def test_an_unterminated_private_key_is_redacted_to_the_end() -> None:
 def test_redacting_an_env_line_keeps_the_blank_lines_above_it() -> None:
     """The line pattern used to reach back across blank lines and delete them."""
     assert redact("Notes.\n\nDB_PASSWORD=hunter2hunter2").text == "Notes.\n\nDB_PASSWORD=[REDACTED:credential]"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["max_tokens: 256", '{"prompt_tokens": 21, "completion_tokens": 37}', "tokens_requested=128"],
+)
+def test_token_counts_are_not_credentials(text: str) -> None:
+    """A count named after tokens is routing signal, and redacting it made every
+    database scan report stored "credentials" that were numbers."""
+    assert redact(text).text == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "access_token: abcdef123456ghijkl",  # a real token is not all digits
+        "token=12345678901234567890",  # nor nine digits or fewer
+        "auth_token: 123456",  # "auth" makes any value a credential
+        "api_key_tokens: 42",  # so does "key"
+        "password: 1234",  # a numeric password is still a password
+    ],
+)
+def test_credentials_that_look_numeric_or_token_named_stay_redacted(text: str) -> None:
+    assert "credential" in redact(text).kinds
+
+
+@pytest.mark.parametrize("text", ["limit is max_tokens=160.", "(max_tokens: 160)", "{'max_tokens': '256'}"])
+def test_a_token_count_followed_by_punctuation_is_still_a_count(text: str) -> None:
+    assert redact(text).text == text
+
+
+def test_a_long_digit_token_followed_by_a_brace_stays_redacted() -> None:
+    assert "credential" in redact('{"token": 12345678901234567890}').kinds

@@ -66,7 +66,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?i)(?<![a-z0-9_.-])"
             r"(?=[a-z0-9_.-]*?(?:api[_-]?key|secret|passwd|password|token|access[_-]?key"
             r"|client[_-]?secret|private[_-]?key))"
-            r"([a-z0-9_.-]++)[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+            r"([a-z0-9_.-]++)[\"']?\s*[:=]\s*(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
         ),
     ),
     # From the start of the run, so "a.b.c.d..." with no "@" is scanned once.
@@ -88,6 +88,26 @@ _ENV_LINE = re.compile(
 _ENV_SENSITIVE = re.compile(
     r"(?i)(key|secret|token|password|passwd|credential|auth|private|session|cookie)"
 )
+
+
+_STRONG_CREDENTIAL_WORDS = ("key", "secret", "passw", "private", "auth")
+# Up to nine digits, optionally quoted, then only closing punctuation.
+_COUNT_VALUE = re.compile(r"[\"']?\d{1,9}[\"']?[)\]}.!?]*")
+
+
+def _is_token_count(name: str, value: str) -> bool:
+    """`max_tokens: 256` and `"prompt_tokens": 21` are counts, not credentials.
+
+    Only a name whose one credential word is "token" qualifies, and only with a
+    short all-digit value: no real token is nine digits or fewer. A name that
+    also says key, secret, password, private or auth keeps every value redacted.
+    """
+    lowered = name.lower()
+    if "token" not in lowered or any(word in lowered for word in _STRONG_CREDENTIAL_WORDS):
+        return False
+    # The value runs to the next space, comma or semicolon, so it can carry the
+    # closer of the JSON or sentence around it: `37}` or `160).`.
+    return _COUNT_VALUE.fullmatch(value) is not None
 
 
 @dataclass
@@ -119,6 +139,8 @@ def redact(text: str) -> RedactionResult:
     for kind, pattern in _PATTERNS:
 
         def _sub(match: re.Match[str], kind: str = kind) -> str:
+            if kind == "credential" and _is_token_count(match.group(1), match.group(2)):
+                return match.group(0)
             kinds.append(kind)
             if kind == "credential":
                 return f"{match.group(1)}={_PLACEHOLDER.format(kind=kind)}"

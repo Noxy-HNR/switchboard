@@ -18,7 +18,7 @@ SDK in `.venv/Lib/site-packages/typesafe_sdk`.
 | `Noul`, `Choice`, `Score` | Correct, and they are the only three question types. |
 | `TYPESAFE_API_KEY` | Correct (`typesafe_sdk.constants.API_KEY_ENV`). Also `TYPESAFE_BASE_URL`, `TYPESAFE_DEFAULT_MODEL`, `TYPESAFE_LOG_LEVEL`. |
 | `jev-latest` | Correct; it is the SDK default and currently resolves to `jev-1.13.0`. `jev-preview` points at the same build. |
-| An official System One Adapter | **Exists**: `typesafe-ai/system-one-adapter-python`, v0.2.0, MIT. |
+| An official System One Adapter | **Exists**: `typesafe-ai/system-one-adapter-python`, v0.2.1, MIT. |
 
 ### API contract used
 
@@ -53,9 +53,16 @@ SDK in `.venv/Lib/site-packages/typesafe_sdk`.
 
 ### SDK version pinned, deliberately
 
-`typesafe-sdk==0.7.0`. The SDK is days old and has already shipped two breaking
+`typesafe-sdk==0.7.1`. The SDK is days old and has already shipped two breaking
 changes (0.6.0 changed `Score.criteria` to an ordered sequence; **0.7.0 moved
-serialisation from `msgspec` to `pydantic`** on 2026-09-18). It depends on
+serialisation from `msgspec` to `pydantic`** on 2026-09-18). 0.7.1
+(2026-09-21) is a security release with no request, response or type changes:
+the API key is stripped and validated when the client is created and masked in
+connection-error messages and exception chains, which is what lets the Jev
+backend include a plain `TypeSafeError`'s own message when describing a
+construction failure. Its debug logging writes request bodies unredacted, so
+the Jev backend holds the `typesafe_sdk` logger at INFO or above whatever
+`TYPESAFE_LOG_LEVEL` says. It depends on
 `httpx2`, not `httpx`, and `AsyncTypeSafeClient(transport=...)` accepts an
 `httpx2.AsyncBaseTransport` — which is what the Jev backend's tests drive with
 `httpx2.MockTransport`.
@@ -71,9 +78,13 @@ From the API docs, the patterns pages and `model-jaggedness/jev-1.13`:
 - **Keep arithmetic in code.** Jev "is not a calculator" and "reads dates as
   text". Context sizes, switch costs, VRAM and RAM are therefore computed in
   Python and never asked about.
-- **Small state beats large state.** Accuracy falls as irrelevant content grows.
-  Switchboard sends the latest user turn, the previous one, tool *names* and a
-  few counters — never the whole conversation, never file contents.
+- **Small state beats large state, and only fields a question names.**
+  Accuracy falls as irrelevant content grows. Switchboard sends the latest user
+  turn and, when there is one, the previous one, plus `has_images` when true -
+  exactly the paths the questions quote (`decisions/state.py`). Tool names and
+  the turn number used to be sent too; no question judged them, so they went.
+  Pasted machine output inside a turn is replaced by a one-line
+  `[pasted ... omitted: N lines]` marker the questions explain.
 - **Do not expect structural invariants.** A Noul and a "yes/no" Choice on the
   same question return different numbers, so a threshold tuned on one must not
   be carried to the other. Switchboard keeps each question's answer in its own
@@ -84,12 +95,23 @@ From the API docs, the patterns pages and `model-jaggedness/jev-1.13`:
 
 ## System One Adapter (the local fallback)
 
-`system-one-adapter==0.2.0`, official, MIT, depends on `typesafe-sdk>=0.7.0`.
+`system-one-adapter==0.2.1`, official, MIT, depends on `typesafe-sdk>=0.7.0`.
+0.2.1 rejects incomplete completions, stops retrying refusals, and makes
+`ProviderResult` token counts `int | None`; the local provider mirrors all
+three (a `finish_reason: "length"` reply is refused as invalid, and a count
+llama-server did not report stays `None` instead of becoming 0).
 
 - It is a drop-in `system_one` implementation backed by ordinary LLMs, which is
   exactly the "local fallback" role: the same questions, the same answer types,
   a different engine.
 - `SystemOneAdapterClient(structured_outputs=..., llm_answer_mode="probabilities"|"discrete", normalize_probabilities=...)`.
+- **Switchboard runs it in prompted mode** (`structured_outputs=False`). In
+  structured mode the questions and criteria exist only as `description`s in
+  the JSON schema, and llama.cpp turns `response_format` into a sampling
+  grammar without ever showing the schema to the model, so the model would see
+  no questions at all. Prompted mode appends the adapter's own schema template
+  to its system message; the provider still attaches the grammar, so the reply
+  always parses. The adapter's trace then records exactly what the model saw.
 - Its `openai`/`anthropic` extras are **not installed**. The provider protocol
   (`providers/base.py`) needs only `model_name`, `async request(messages, *, schema, structured)`
   and `translate_error`, so Switchboard ships its own `LlamaCppProvider` over
