@@ -450,3 +450,29 @@ async def test_status_report_is_complete(config: Config) -> None:
         assert "ram_free_gb" in report["host"]
     finally:
         await close(router)
+
+
+async def test_stop_complete_needs_a_high_bar() -> None:
+    """Stopping ends the agent loop; a lukewarm "complete" must not do it."""
+    step = StepContext(goal="ship it", action="run checks", result="checks passed", exit_code=0)
+
+    lukewarm = StepDecision(outcome="success", progress=0.9, complete=0.65, backend="fixture")
+    assert recommend_next(step, lukewarm)[0] == "continue"
+
+    split = StepDecision(
+        outcome="success",
+        outcome_probabilities={"success": 0.45, "failure": 0.40, "partial": 0.15},
+        progress=0.9,
+        complete=0.95,
+        backend="fixture",
+    )
+    assert recommend_next(step, split)[0] == "continue"
+
+    clear = StepDecision(
+        outcome="success",
+        outcome_probabilities={"success": 0.9, "partial": 0.1},
+        progress=0.9,
+        complete=0.9,
+        backend="fixture",
+    )
+    assert recommend_next(step, clear)[0] == "stop_complete"

@@ -237,7 +237,11 @@ async def test_decide_step_reads_the_first_token_distribution() -> None:
 
     document = recorder.document(0)
     assert "uv run switchboard prune --days 30" in document
-    assert "task.goal" in document and "step.goal" in document
+    # The shared step state (decisions.state): the goal lives at `task.goal`
+    # only, the path the questions name, and the exit code rides along.
+    assert "task.goal:\nmake the prune command drop expired rows" in document
+    assert "step.goal" not in document
+    assert "step.exit_code:\n0" in document
 
 
 async def test_every_decision_says_the_probabilities_are_not_calibrated() -> None:

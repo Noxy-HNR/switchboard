@@ -83,6 +83,7 @@ from switchboard.decisions.schema import (
     TaskDecision,
     score_from_probabilities,
 )
+from switchboard.decisions.state import build_step_state, build_task_state, render_lines
 from switchboard.privacy import truncate_middle
 
 BACKEND_NAME: Final = "logit"
@@ -110,7 +111,6 @@ _YES_NO: Final[tuple[str, str]] = ("yes", "no")
 
 _PUNCTUATION: Final = " \t\n\r\"'`*_-.,:;!?()[]{}<>/\\|"
 
-_PRIOR_MESSAGE_SHARE: Final = 4
 _TOP_TOKENS_IN_NOTE: Final = 4
 _ERROR_MESSAGE_CHARS: Final = 300
 
@@ -442,30 +442,14 @@ class LogitDecisionBackend:
     # --- state ----------------------------------------------------------
 
     def task_state(self, context: TaskContext) -> str:
+        """The shared task state (`decisions.state`) as plain `path:` blocks."""
         budget = self._config.privacy.max_state_chars
-        lines = [f"request.message:\n{truncate_middle(context.message, budget)}"]
-        if context.prior_message:
-            prior = truncate_middle(context.prior_message, budget // _PRIOR_MESSAGE_SHARE)
-            lines.append(f"request.prior_message:\n{prior}")
-        if context.tool_names:
-            lines.append("request.tools_available: " + ", ".join(sorted(context.tool_names)[:40]))
-        return "\n\n".join(lines)
+        return render_lines(build_task_state(context, truncate_middle, budget))
 
     def step_state(self, context: StepContext) -> str:
+        """The shared step state as plain `path:` blocks."""
         budget = self._config.privacy.max_state_chars
-        share = budget // _PRIOR_MESSAGE_SHARE
-        goal = truncate_middle(context.goal, share)
-        # One goal serves both names the questions use; see the local backend.
-        lines = [
-            f"task.goal:\n{goal}",
-            f"step.goal:\n{goal}",
-            f"step.action:\n{truncate_middle(context.action, share)}",
-            f"step.result:\n{truncate_middle(context.result, budget)}",
-            f"step.attempt: {context.attempt}",
-        ]
-        if context.exit_code is not None:
-            lines.append(f"step.exit_code: {context.exit_code}")
-        return "\n\n".join(lines)
+        return render_lines(build_step_state(context, truncate_middle, budget))
 
     # --- probing --------------------------------------------------------
 

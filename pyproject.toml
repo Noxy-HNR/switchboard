@@ -10,8 +10,8 @@ dependencies = [
     # Pinned: the System One Adapter requires typesafe-sdk>=0.7.0, whose response
     # types moved from msgspec to pydantic in 0.7.0. Unpinning risks another
     # breaking ser/de change in a very young SDK.
-    "typesafe-sdk==0.7.0",
-    "system-one-adapter==0.2.0",
+    "typesafe-sdk==0.7.1",
+    "system-one-adapter==0.2.1",
     # cptr — the only MCP client on this machine — ships mcp 1.29. Staying on the
     # same major version keeps the protocol negotiation path well-trodden.
     "mcp>=1.29,<2",

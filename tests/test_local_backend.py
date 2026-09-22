@@ -322,6 +322,78 @@ async def test_state_is_truncated_but_not_redacted() -> None:
     assert len(document) < len(message)
 
 
+async def test_task_state_is_the_shared_state() -> None:
+    """Every backend sends the same fields (decisions.state), so they answer one question."""
+    recorder = replying(llama_reply(DISCRETE_TASK_ANSWERS))
+    context = TaskContext(
+        message="Why does my loader raise KeyError on the second pass?",
+        prior_message="It worked yesterday.",
+        tool_names=["read_file", "run_command"],
+        turn_index=3,
+        has_images=True,
+    )
+    async with backend_for(recorder) as backend:
+        state = backend.task_state(context)
+        await backend.decide_task(context, READY)
+
+    assert state == {
+        "request": {
+            "message": "Why does my loader raise KeyError on the second pass?",
+            "previous_message": "It worked yesterday.",
+            "has_images": True,
+        }
+    }
+    document = recorder.document
+    assert "Why does my loader raise KeyError" in document
+    # Tool names describe the client, not the request; no question judges them.
+    assert "read_file" not in document
+
+
+async def test_step_state_is_the_shared_state() -> None:
+    recorder = replying(llama_reply(DISCRETE_STEP_ANSWERS))
+    async with backend_for(recorder) as backend:
+        state = backend.step_state(
+            StepContext(
+                goal="get the integration suite green",
+                action="uv run pytest",
+                result="1 failed",
+                exit_code=1,
+                attempt=2,
+                previous_attempts=["uv run pytest -x"],
+            )
+        )
+
+    assert state == {
+        "task": {"goal": "get the integration suite green"},
+        "step": {"action": "uv run pytest", "result": "1 failed", "attempt": 2, "exit_code": 1},
+        "earlier_attempts": ["uv run pytest -x"],
+    }
+
+
+async def test_a_reply_cut_off_at_max_tokens_is_refused_without_blaming_the_server() -> None:
+    reply = llama_reply(DISCRETE_TASK_ANSWERS)
+    reply["choices"][0]["finish_reason"] = "length"
+    recorder = replying(reply)
+    async with backend_for(recorder) as backend:
+        with pytest.raises(BackendError) as caught:
+            await backend.decide_task(TaskContext(message="hello"), READY)
+
+    # The same max_tokens would cut it off again: not retried, not an outage.
+    assert caught.value.kind == "invalid"
+    assert caught.value.retryable is False
+    assert len(recorder.requests) == 1
+
+
+async def test_unreported_token_counts_are_left_out_not_recorded_as_zero() -> None:
+    reply = llama_reply(DISCRETE_TASK_ANSWERS)
+    del reply["usage"]
+    recorder = replying(reply)
+    async with backend_for(recorder) as backend:
+        decision = await backend.decide_task(TaskContext(message="hello"), READY)
+
+    assert decision.usage == {}
+
+
 # --- availability -----------------------------------------------------------
 
 

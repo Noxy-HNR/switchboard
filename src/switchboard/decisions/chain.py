@@ -40,6 +40,10 @@ from switchboard.decisions.schema import StepDecision, TaskDecision
 
 Kind = Literal["task", "step"]
 
+# The fast path defers to the full chain when a must-confirm domain holds at
+# least this share of the rule engine's domain scores.
+_CONFIRM_SHARE = 0.2
+
 
 @dataclass(slots=True)
 class Attempt:
@@ -381,10 +385,19 @@ class DecisionChain:
             return None
 
         confidence = decision.domain_confidence or 0.0
+        # A meaningful share for a must-confirm domain also sends the request on,
+        # not just a top answer: "explain my blood test" can score general first
+        # and medical close behind. Reading the rules' heuristic share here is
+        # safe because it can only make Switchboard ask a better backend more often.
+        confirm_share = any(
+            decision.domain_probabilities.get(domain, 0.0) >= _CONFIRM_SHARE
+            for domain in settings.always_confirm_domains
+        )
         if (
             decision.difficulty > settings.max_difficulty
             or confidence < settings.min_confidence
             or decision.domain in settings.always_confirm_domains
+            or confirm_share
         ):
             return None
 

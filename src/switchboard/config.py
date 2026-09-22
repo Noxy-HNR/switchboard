@@ -102,8 +102,8 @@ class PolicyConfig(_Section):
 class JevConfig(_Section):
     enabled: bool | Literal["auto"] = "auto"
     model: str = "jev-latest"
-    timeout_s: float = Field(default=4.0, gt=0)
-    max_retries: int = Field(default=2, ge=0, le=10)
+    timeout_s: float = Field(default=2.0, gt=0)
+    max_retries: int = Field(default=1, ge=0, le=10)
     breaker_failures: int = Field(default=3, ge=1)
     breaker_cooldown_s: float = Field(default=60.0, ge=0)
     usd_per_input_mtok: float = Field(default=0.042, ge=0)

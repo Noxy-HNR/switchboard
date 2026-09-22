@@ -28,40 +28,49 @@ Domain = Literal["general", "coding", "medical", "writing", "research", "system_
 DOMAINS: tuple[Domain, ...] = ("general", "coding", "medical", "writing", "research", "system_ops")
 
 # Criteria are written so each option stands alone, per the Jev guidance on
-# literal reading: the model answers the words, so boundary cases go here.
+# literal reading: the model answers the words, so boundary cases go here -
+# including which neighbouring option a borderline case belongs to.
 DOMAIN_CRITERIA: dict[str, str] = {
     "general": (
-        "Everyday conversation, explanation, factual questions, summarising, or "
-        "anything that does not clearly belong to another option."
+        "Everyday conversation, general knowledge, advice or explanation that needs "
+        "no specialist expertise. Explaining or summarising code, health material or "
+        "this computer's setup belongs to that option instead. Also anything that fits "
+        "none of the other options."
     ),
     "coding": (
-        "Writing, reading, debugging, reviewing or explaining source code, "
-        "scripts, shell commands, configuration files or APIs."
+        "Writing, reading, debugging, reviewing or explaining source code, scripts, "
+        "configuration files or APIs, including a script or command for the user to "
+        "run themselves."
     ),
     "medical": (
-        "Health, clinical or biomedical content where medical expertise changes "
-        "the quality of the answer: symptoms, diagnoses, treatments, drugs, lab "
-        "results, medical literature. Not a passing mention of feeling tired."
+        "Health, clinical or biomedical content where medical expertise changes the "
+        "quality of the answer: symptoms, diagnoses, treatments, drugs and doses, lab "
+        "results, medical literature, including explaining or summarising them. Not a "
+        "passing mention of health inside some other request."
     ),
     "writing": (
-        "Drafting or editing prose for a human audience: emails, essays, stories, "
-        "documentation wording, tone and style changes."
+        "Drafting or editing prose for a human audience where wording, tone and "
+        "structure are the work: emails, essays, stories, documentation wording. Not "
+        "prose whose correctness depends on medical or coding knowledge."
     ),
     "research": (
-        "Gathering, comparing or synthesising information across sources to reach "
-        "a conclusion, including literature reviews and product comparisons."
+        "Gathering, comparing or synthesising information from several sources to "
+        "reach a conclusion, such as a literature review or a product comparison. Not "
+        "a single factual question."
     ),
     "system_ops": (
-        "Operating this Windows computer: files and folders, the terminal, "
-        "processes, services, installed software, scheduled tasks, automation."
+        "Having the assistant itself operate this Windows computer: files and folders, "
+        "running terminal commands, processes, services, installed software, scheduled "
+        "tasks, automation. Not writing a script for the user to run (that is coding)."
     ),
 }
 
 DOMAIN_INSTRUCTIONS = (
-    "Which kind of work does the request in `request.message` ask for? Judge the "
-    "work the user wants done, not the subject matter they mention in passing."
+    "Which kind of expertise does a good answer to `request.message` depend on most? "
+    "Judge what the user wants done now; use `request.previous_message`, when present, "
+    "only to resolve what the message refers to. A topic mentioned only in passing "
+    "does not count."
 )
-
 
 class Difficulty(IntEnum):
     """Ordered levels for the difficulty Score. Index matches the Score level."""
@@ -72,46 +81,65 @@ class Difficulty(IntEnum):
     HARD = 3
 
 
+# Each level describes a situation rather than a degree, and the question asks
+# about one dimension only - reasoning - because domain expertise is already
+# carried by the domain answer and the model's capability ceiling for it.
 DIFFICULTY_CRITERIA: list[str] = [
     # Level 0
-    "Trivial: a greeting, an acknowledgement, a one-line lookup, or a question "
-    "answerable in a sentence from common knowledge.",
+    "A greeting, thanks or acknowledgement, or a question answered in one sentence "
+    "from common knowledge, such as a definition or a unit conversion.",
     # Level 1
-    "Routine: a single clear task an average competent assistant handles in one "
-    "pass, such as a short explanation, a small edit, or a simple script.",
+    "One clear task done in a single pass without planning: a short explanation, a "
+    "small edit to supplied text or code, a simple script, or a summary of a short "
+    "passage.",
     # Level 2
-    "Moderate: needs several linked steps, careful correctness, or domain "
-    "knowledge; for example debugging a real error or designing a small component.",
+    "Several dependent steps that each have to be right: debugging a real error from "
+    "its symptoms, designing a small component, or solving a multi-part problem.",
     # Level 3
-    "Hard: needs sustained multi-step reasoning, weighing trade-offs, or deep "
-    "expertise; a mistake early would invalidate the whole answer.",
+    "A long chain of reasoning where an early mistake spoils everything after it, or "
+    "weighing several competing trade-offs to reach one recommendation: designing a "
+    "system, writing a proof, or planning a migration under many constraints.",
 ]
 
+# Pasted machine output is replaced by "[pasted <kind> omitted: N lines]" before
+# anything is sent to a cloud provider (see privacy.minimize_for_cloud). Read
+# literally, such a marker looks like missing evidence, so the questions it can
+# affect say what it means.
+_MARKER_NOTE = (
+    "A `[pasted ... omitted]` marker stands for content the assistant will see in full."
+)
+
 DIFFICULTY_INSTRUCTIONS = (
-    "How much reasoning depth does answering `request.message` well require? "
-    "Rate the work the answer demands, not how long the message is."
+    "How much reasoning does a good answer to `request.message` take? Judge the "
+    "thinking the answer needs, not the length of the message or how specialised its "
+    f"topic is. {_MARKER_NOTE}"
 )
 
 TOOL_NEED_INSTRUCTIONS = (
     "Answering `request.message` correctly requires taking an action outside the "
-    "conversation, such as reading or writing files, running a command, "
-    "controlling this computer, or fetching a web page."
+    "conversation, such as reading or writing files, running a command, controlling "
+    "this computer, or fetching a web page."
 )
 TOOL_NEED_CRITERIA = {
-    "true": "The request cannot be completed from knowledge and the conversation alone.",
-    "false": "The request can be answered from knowledge and the conversation alone, "
-    "even if it discusses tools or commands.",
+    "true": "The answer depends on something only an action can supply: a file or "
+    "program state on this computer that was not pasted, the result of running "
+    "something, or information newer than general knowledge.",
+    "false": "The request can be answered from general knowledge and the conversation "
+    "alone, including when it asks for code or commands for the user to run.",
 }
 
 AMBIGUITY_INSTRUCTIONS = (
-    "The request in `request.message` is too ambiguous to act on without asking "
-    "the user a clarifying question first."
+    "Even using `request.previous_message` for context, `request.message` is too "
+    "unclear to act on without first asking the user what they mean."
 )
 AMBIGUITY_CRITERIA = {
-    "true": "A competent assistant would have to ask what is meant before starting.",
-    "false": "A competent assistant could start work, even if some details are assumed.",
+    "true": "A competent assistant would have to ask before starting: the message "
+    "refers to something absent from the conversation, or its goal could mean clearly "
+    "different things.",
+    "false": "A competent assistant could start work, assuming reasonable defaults for "
+    "missing details. An attached image (`request.has_images`) or a `[pasted ... "
+    "omitted]` marker counts as content the assistant can see.",
 }
-
 
 @dataclass(slots=True)
 class TaskDecision:
@@ -130,6 +158,11 @@ class TaskDecision:
 
     backend: str = "rules"
     latency_ms: float = 0.0
+    # Whether the probability dicts are calibrated probabilities (Jev) rather than
+    # heuristic scores (rules) or a next-token distribution (logit). Only
+    # calibrated distributions may be used as weights; everything else is read
+    # as a point value.
+    calibrated: bool = False
     # True when the backend answered only some questions and defaults filled the rest.
     degraded: bool = False
     usage: dict[str, int] = field(default_factory=dict)
@@ -151,6 +184,7 @@ class TaskDecision:
             "ambiguity": _round(self.ambiguity),
             "backend": self.backend,
             "latency_ms": _round(self.latency_ms, 1),
+            "calibrated": self.calibrated,
             "degraded": self.degraded,
             "notes": self.notes,
         }
@@ -168,17 +202,18 @@ STEP_OUTCOME_CRITERIA: dict[str, str] = {
     "work or is missing.",
     "failure": "The step did not do what it set out to do: it errored, was rejected, "
     "or produced an unusable result.",
-    "unclear": "The evidence does not say whether the step worked.",
+    "unclear": "`step.result` does not show whether the action worked: it is empty, "
+    "cut off, or about something else.",
 }
 
 STEP_OUTCOME_INSTRUCTIONS = (
-    "Judging only `task.goal`, `step.action` and `step.result`: did this step do "
-    "what it set out to do?"
+    "Judging from `step.result` and `step.exit_code` (when present): did "
+    "`step.action` do what it set out to do?"
 )
 
 STEP_PROGRESS_INSTRUCTIONS = (
-    "This step moved the overall task in `task.goal` meaningfully closer to done, "
-    "compared with the state before it ran."
+    "After this step, something needed for `task.goal` is known or done that was not "
+    "known or done before, including by `earlier_attempts` when present."
 )
 STEP_PROGRESS_CRITERIA = {
     "true": "Something needed for the goal is now known or done that was not before.",
@@ -186,23 +221,29 @@ STEP_PROGRESS_CRITERIA = {
 }
 
 STEP_COMPLETE_INSTRUCTIONS = (
-    "Everything `task.goal` asks for has now been accomplished, with nothing left "
-    "to do."
+    "`step.result` shows that everything `task.goal` asks for is now done, with no "
+    "further step needed."
 )
 STEP_COMPLETE_CRITERIA = {
-    "true": "No further step is needed to satisfy the stated goal.",
-    "false": "At least one part of the goal still needs work.",
+    "true": "The result itself shows the whole goal is satisfied, such as the final "
+    "check passing or the requested output existing.",
+    "false": "The result shows only part of the goal done, or does not show whether "
+    "the rest is done.",
 }
 
+# Asked about every step, so the premise is stated: it only means anything when
+# the action failed. A typo is a mistake in the action, so an identical re-run
+# fails again - it belongs under "true", not with transient causes.
 STEP_NEW_APPROACH_INSTRUCTIONS = (
-    "Repeating `step.action` unchanged would fail again, so a different approach "
-    "is needed."
+    "If `step.action` failed: running it again exactly as written would fail again "
+    "for the same reason."
 )
 STEP_NEW_APPROACH_CRITERIA = {
-    "true": "The obstacle is inherent to this approach, such as a missing capability, "
-    "a wrong tool, or a rejected permission.",
-    "false": "The obstacle looks transient or incidental, such as a timeout, a typo, "
-    "or a temporary lock.",
+    "true": "The cause shown in `step.result` would recur on an identical re-run: a "
+    "missing capability or dependency, the wrong tool, a rejected permission, or a "
+    "mistake in the action itself such as a typo or a wrong path.",
+    "false": "The cause is transient and may clear on a plain retry: a timeout, a "
+    "dropped connection, a busy resource, or a temporary lock.",
 }
 
 # Recommendations are decided in code from the judgments plus hard facts.
@@ -224,6 +265,8 @@ class StepDecision:
 
     backend: str = "rules"
     latency_ms: float = 0.0
+    # See TaskDecision.calibrated: only Jev's answers are calibrated.
+    calibrated: bool = False
     degraded: bool = False
     usage: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
@@ -240,6 +283,7 @@ class StepDecision:
             "needs_new_approach": _round(self.needs_new_approach),
             "backend": self.backend,
             "latency_ms": _round(self.latency_ms, 1),
+            "calibrated": self.calibrated,
             "degraded": self.degraded,
             "notes": self.notes,
         }

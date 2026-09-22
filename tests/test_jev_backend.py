@@ -229,12 +229,12 @@ async def test_task_state_carries_only_the_named_fields() -> None:
 
     await backend.decide_task(task_context(), FACTS)
 
+    # Only fields a question names (decisions.state). Tool names and the turn
+    # number are facts the policy reads, not evidence any question judges.
     assert body_of(seen[0])["state"] == {
         "request": {
             "message": "Why does my loader raise KeyError on the second pass?",
             "previous_message": "It worked yesterday.",
-            "available_tools": ["read_file", "run_command"],
-            "turn": 3,
             "has_images": True,
         }
     }
@@ -250,9 +250,9 @@ async def test_task_state_omits_absent_context() -> None:
 
     await backend.decide_task(TaskContext(message="hi"), FACTS)
 
-    assert body_of(seen[0])["state"] == {
-        "request": {"message": "hi", "turn": 0, "has_images": False}
-    }
+    # An absent previous turn and a missing image are omitted, not sent as
+    # empty values a literal reader might take as evidence.
+    assert body_of(seen[0])["state"] == {"request": {"message": "hi"}}
 
     await backend.aclose()
 
@@ -274,16 +274,22 @@ async def test_long_message_goes_through_the_state_budget() -> None:
     await backend.aclose()
 
 
-async def test_tool_roster_is_capped() -> None:
+async def test_tool_names_are_not_sent() -> None:
+    """A client's tool roster describes the client, not the request.
+
+    Sending it made "does this need a tool?" lean toward yes for every request
+    from a tool-heavy client. Whether tools are attached is a fact the policy
+    reads directly (it excludes models that cannot express tool calls).
+    """
     transport, seen = responding(TASK_BODY)
     backend = JevBackend(make_config(), transport=transport)
 
     context = TaskContext(message="do a thing", tool_names=[f"tool_{n}" for n in range(200)])
     await backend.decide_task(context, FACTS)
 
-    tools = body_of(seen[0])["state"]["request"]["available_tools"]
-    assert len(tools) == 32
-    assert tools[0] == "tool_0"
+    sent = seen[0].content.decode()
+    assert "tool_0" not in sent
+    assert "available_tools" not in sent
 
     await backend.aclose()
 
@@ -317,10 +323,7 @@ async def test_decide_step_parses_a_full_answer() -> None:
     }
     assert body["state"] == {
         "task": {"goal": "Get the test suite green"},
-        # The goal is mirrored into `step` because STEP_OUTCOME_INSTRUCTIONS names
-        # `step.goal` while the other questions name `task.goal`.
         "step": {
-            "goal": "Get the test suite green",
             "action": "uv run pytest -q",
             "result": "2 failed, 18 passed",
             "exit_code": 1,
@@ -678,3 +681,104 @@ async def test_a_bad_timeout_is_reported_as_invalid_not_a_crash() -> None:
 
     assert info.value.kind == "invalid"
     assert isinstance(info.value.__cause__, TypeSafeError)
+
+
+# --- review follow-ups ------------------------------------------------------
+
+
+async def test_both_decisions_are_marked_calibrated() -> None:
+    """Jev is the one backend trained for calibrated probabilities; the policy
+    weighs a distribution only when the decision says it may."""
+    transport, _seen = recording(
+        lambda request: httpx2.Response(
+            200,
+            json=STEP_BODY if "outcome" in body_of(request)["questions"] else TASK_BODY,
+            headers=HEADERS,
+        )
+    )
+    backend = JevBackend(make_config(), transport=transport)
+
+    task = await backend.decide_task(task_context(), FACTS)
+    step = await backend.decide_step(step_context(), FACTS)
+
+    assert task.calibrated is True
+    assert step.calibrated is True
+    assert task.summary()["calibrated"] is True
+
+    await backend.aclose()
+
+
+async def test_a_step_whose_result_is_machine_output_is_judged_locally() -> None:
+    """Minimization would leave the step questions judging a placeholder, so the
+    step is declined (`skipped`, not an outage) before anything is sent."""
+    backend = JevBackend(make_config(), transport=exploding())
+    context = StepContext(
+        goal="load the fixtures",
+        action="python load.py",
+        result=(
+            "Traceback (most recent call last):\n"
+            '  File "load.py", line 3, in <module>\n'
+            "    rows = read_rows(path)\n"
+            "KeyError: 'id'\n"
+        ),
+        exit_code=1,
+    )
+
+    with pytest.raises(BackendError) as info:
+        await backend.decide_step(context, FACTS)
+
+    assert info.value.kind == "skipped"
+    assert info.value.retryable is False
+    assert "judged locally" in str(info.value)
+
+    await backend.aclose()
+
+
+@pytest.mark.parametrize("score,expected", [(3.0000004, 3.0), (-0.0000004, 0.0)])
+async def test_a_score_a_hair_outside_its_range_is_clamped(score: float, expected: float) -> None:
+    """Float round-off in a probability-weighted mean is not an invalid answer."""
+    body = {
+        **TASK_BODY,
+        "answers": {
+            **TASK_BODY["answers"],
+            "difficulty": {**TASK_BODY["answers"]["difficulty"], "score": score},
+        },
+    }
+    transport, _seen = responding(body)
+    backend = JevBackend(make_config(), transport=transport)
+
+    decision = await backend.decide_task(task_context(), FACTS)
+
+    assert decision.difficulty == expected
+
+    await backend.aclose()
+
+
+async def test_a_noul_a_hair_above_one_is_clamped() -> None:
+    body = {
+        **TASK_BODY,
+        "answers": {**TASK_BODY["answers"], "tool_need": {"type": "noul", "noul": 1.0000004}},
+    }
+    transport, _seen = responding(body)
+    backend = JevBackend(make_config(), transport=transport)
+
+    decision = await backend.decide_task(task_context(), FACTS)
+
+    assert decision.tool_need == 1.0
+
+    await backend.aclose()
+
+
+def test_the_sdk_debug_logger_is_raised_to_info() -> None:
+    """The SDK's debug level logs request bodies unredacted; building the backend
+    must not leave that on, whatever TYPESAFE_LOG_LEVEL said."""
+    import logging
+
+    sdk_logger = logging.getLogger("typesafe_sdk")
+    before = sdk_logger.level
+    sdk_logger.setLevel(logging.DEBUG)
+    try:
+        JevBackend(make_config(), transport=exploding())
+        assert sdk_logger.getEffectiveLevel() >= logging.INFO
+    finally:
+        sdk_logger.setLevel(before)

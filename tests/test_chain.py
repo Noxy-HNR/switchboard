@@ -269,3 +269,23 @@ async def test_probe_reports_every_backend(config: Config) -> None:
 
     assert health["refusing"]["availability"] == "unconfigured"
     assert health["rules"]["availability"] == "ready"
+
+
+async def test_a_meaningful_medical_share_is_confirmed_by_the_full_chain(config: Config) -> None:
+    """A request the rules rate mostly general but partly medical still gets checked."""
+    expensive = Recorder("expensive", domain="medical")
+
+    class MostlyGeneral(RulesBackend):
+        async def decide_task(self, context, facts):
+            decision = await super().decide_task(context, facts)
+            decision.domain = "general"
+            decision.difficulty = 0.5
+            decision.domain_confidence = 0.9
+            decision.domain_probabilities = {"general": 0.7, "medical": 0.3}
+            return decision
+
+    chain = chain_of(config, expensive, MostlyGeneral(config))
+    result = await chain.decide_task(EASY, FACTS)
+
+    assert expensive.calls == 1, "a 30% medical share must not be settled by the rules alone"
+    assert result.decision.backend == "expensive"

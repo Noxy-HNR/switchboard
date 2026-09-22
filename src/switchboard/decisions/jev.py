@@ -38,6 +38,7 @@ and holding a cooldown belongs to whoever owns the chain's health view.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Final, Literal, cast
 
 import httpx2
@@ -96,19 +97,16 @@ from switchboard.decisions.schema import (
     StepOutcome,
     TaskDecision,
 )
+from switchboard.decisions.state import build_step_state, build_task_state
 from switchboard.privacy import minimize_for_cloud, prepare_cloud_text
 
 BACKEND_NAME: Final = "jev"
 
-# A tool roster can run to hundreds of entries on an MCP-heavy client. Names are
-# identifiers the caller chose, not user prose, so they are not redacted - but
-# they are capped so they cannot crowd the actual message out of the state.
-_MAX_TOOL_NAMES: Final = 32
-_MAX_TOOL_NAME_CHARS: Final = 64
-# Only the most recent attempts carry signal about going in circles.
-_MAX_EARLIER_ATTEMPTS: Final = 3
-# Ceiling on any server-supplied fragment quoted into an error message.
-_MAX_DETAIL_CHARS: Final = 40
+# Ceiling on any SDK-supplied message quoted into an error.
+_MAX_DETAIL_CHARS: Final = 120
+# Probabilities arrive as floats that sum to "approximately" 1 (docs.typesafe.ai/api).
+# Values a rounding error outside [0, 1] are clamped rather than rejected.
+_RANGE_TOLERANCE: Final = 1e-6
 
 _ErrorKind = Literal["timeout", "connection", "auth", "rate_limit", "server", "invalid", "skipped"]
 
@@ -161,37 +159,34 @@ _STEP_QUESTIONS: Final[dict[str, Question]] = {
 class _Cleaner:
     """Runs every outbound string through the privacy rules, remembering the kinds.
 
-    Three steps, in order, for every string that goes into the state:
+    For each string, in order:
 
     1. **Machine output stays local.** Tracebacks, code blocks, terminal runs,
-       key material and whole JSON/XML documents are replaced by a one-line
-       description ("[Python traceback kept local: 23 lines]"). This is not
-       switchable: the rule is that raw dumps never leave the machine, and the
-       judgments only need to know such content is *there*, not what it says.
+       key material and JSON/XML documents are replaced by a one-line
+       description (``[pasted Python traceback omitted: 23 lines]``). This is
+       not switchable: raw dumps never leave the machine, and the judgments only
+       need to know such content is *there*, not what it says.
     2. **Secrets are redacted** from what remains (``privacy.redact``).
-    3. **The whole state shares one character budget** (``privacy.max_state_chars``),
-       spent in the order fields are cleaned - the current message first.
+    3. **It is cut to the share of the budget the state builder gave it**
+       (``decisions.state``), so the whole state stays under
+       ``privacy.max_state_chars``.
 
     One instance per call, so the notes it produces describe that request only.
     """
 
-    __slots__ = ("_max_chars", "_redact", "kinds", "kept_local")
+    __slots__ = ("_redact", "kinds", "kept_local")
 
     def __init__(self, privacy: PrivacyConfig) -> None:
-        self._max_chars = privacy.max_state_chars
         self._redact = privacy.redact
         self.kinds: list[str] = []
         self.kept_local: list[str] = []
 
-    def __call__(self, text: str) -> str:
+    def __call__(self, text: str, limit: int) -> str:
         minimized, kept = minimize_for_cloud(text)
         for kind in kept:
             if kind not in self.kept_local:
                 self.kept_local.append(kind)
-        prepared, kinds = prepare_cloud_text(
-            minimized, max_chars=self._max_chars, do_redact=self._redact
-        )
-        self._max_chars = max(0, self._max_chars - len(prepared))
+        prepared, kinds = prepare_cloud_text(minimized, max_chars=limit, do_redact=self._redact)
         for kind in kinds:
             if kind not in self.kinds:
                 self.kinds.append(kind)
@@ -205,56 +200,6 @@ class _Cleaner:
         if self.kinds:
             notes.append(f"redacted: {', '.join(self.kinds)}")
         return notes
-
-
-def _tool_names(names: list[str]) -> list[str]:
-    cleaned: list[str] = []
-    for raw in names[:_MAX_TOOL_NAMES]:
-        name = raw.strip()[:_MAX_TOOL_NAME_CHARS]
-        if name:
-            cleaned.append(name)
-    return cleaned
-
-
-def _task_state(context: TaskContext, clean: _Cleaner) -> dict[str, Any]:
-    """The `request.*` object the task questions refer to.
-
-    `system_prompt`, `session_id` and `estimated_prompt_tokens` are not sent: no
-    question names them, a system prompt is the likeliest place for a secret to
-    hide, and unnamed context only dilutes the judgment.
-    """
-    request: dict[str, Any] = {
-        "message": clean(context.message),
-        "previous_message": clean(context.prior_message) if context.prior_message else None,
-        "available_tools": [clean(name) for name in _tool_names(context.tool_names)] or None,
-        "turn": context.turn_index,
-        "has_images": context.has_images,
-    }
-    return {"request": {key: value for key, value in request.items() if value is not None}}
-
-
-def _step_state(context: StepContext, clean: _Cleaner) -> dict[str, Any]:
-    """The `task.*` / `step.*` / `earlier_attempts` object the step questions refer to."""
-    goal = clean(context.goal)
-    # STEP_OUTCOME_INSTRUCTIONS names `step.goal` while the other step questions
-    # name `task.goal`. That text is shared with the local and rules backends and
-    # is not ours to rewrite, so the goal is mirrored into both paths: every path
-    # a question names then resolves, at the cost of one repeated short string.
-    step: dict[str, Any] = {
-        "goal": goal,
-        "action": clean(context.action),
-        "result": clean(context.result),
-        "exit_code": context.exit_code,
-        "attempt": context.attempt,
-    }
-    state: dict[str, Any] = {
-        "task": {"goal": goal},
-        "step": {key: value for key, value in step.items() if value is not None},
-    }
-    earlier = [clean(item) for item in context.previous_attempts[-_MAX_EARLIER_ATTEMPTS:] if item]
-    if earlier:
-        state["earlier_attempts"] = earlier
-    return state
 
 
 def _classify(error: BaseException) -> tuple[_ErrorKind, bool]:
@@ -290,10 +235,6 @@ def _classify(error: BaseException) -> tuple[_ErrorKind, bool]:
         if 400 <= status < 500:
             return "invalid", False
         return "server", True
-    if isinstance(error, httpx2.TimeoutException):
-        return "timeout", True
-    if isinstance(error, httpx2.HTTPError):
-        return "connection", True
     # A plain TypeSafeError means the request we built was unusable (bad key, bad
     # timeout, empty questions). Retrying it unchanged cannot help.
     return "invalid", False
@@ -309,6 +250,12 @@ def _describe(error: BaseException) -> str:
         detail = f"{type(error).__name__} status={error.status}"
         request_id = error.request_id
         return f"{detail} request={request_id}" if request_id else detail
+    if type(error) is TypeSafeError:
+        # Raised by the SDK itself while building a request (a malformed key, a
+        # bad timeout). Since 0.7.1 the SDK masks credentials in these messages,
+        # and the message is what makes the problem diagnosable.
+        message = " ".join(str(error).split())[:_MAX_DETAIL_CHARS]
+        return f"TypeSafeError: {message}" if message else "TypeSafeError"
     return type(error).__name__
 
 
@@ -344,6 +291,12 @@ class JevBackend:
         """
         if client is not None and transport is not None:
             raise ValueError("client and transport are mutually exclusive.")
+        # The SDK's debug level logs request and response bodies without
+        # redaction (docs.typesafe.ai/sdk/python/usage). Whatever TYPESAFE_LOG_LEVEL
+        # says, this process never logs a state it just minimized and redacted.
+        sdk_logger = logging.getLogger("typesafe_sdk")
+        if sdk_logger.getEffectiveLevel() < logging.INFO:
+            sdk_logger.setLevel(logging.INFO)
         self._config = config
         self._transport = transport
         self._client = client
@@ -377,7 +330,8 @@ class JevBackend:
         """One call, four questions: domain, difficulty, tool need, ambiguity."""
         watch = Stopwatch()
         clean = _Cleaner(self._config.privacy)
-        response = await self._ask(_task_state(context, clean), _TASK_QUESTIONS)
+        state = build_task_state(context, clean, self._config.privacy.max_state_chars)
+        response = await self._ask(state, _TASK_QUESTIONS)
 
         domain = self._choice(response, "domain", DOMAINS)
         difficulty = self._score(response, "difficulty", len(DIFFICULTY_CRITERIA))
@@ -398,15 +352,34 @@ class JevBackend:
             ambiguity=self._noul(response, "ambiguity"),
             backend=self.name,
             latency_ms=watch.ms,
+            # Jev is trained for calibrated probabilities; this is what lets the
+            # policy weigh the whole distribution rather than only the top answer.
+            calibrated=True,
             usage=self._usage(response.usage),
             notes=self._notes(response, clean),
         )
 
     async def decide_step(self, context: StepContext, facts: BackendFacts) -> StepDecision:
-        """One call, four questions: outcome, progress, completeness, new approach."""
+        """One call, four questions: outcome, progress, completeness, new approach.
+
+        A step's result is usually terminal output, and terminal output never
+        leaves this machine. When minimization would withhold the result, the
+        questions would be judging a placeholder in place of the evidence, which
+        produces confident-looking non-answers. So such a step is declined here
+        (``skipped``, which does not count against the breaker) and judged by a
+        local backend that can see the real output.
+        """
+        _, kept = minimize_for_cloud(context.result)
+        if kept:
+            raise self._error(
+                f"step result is machine output ({', '.join(kept)}); judged locally",
+                kind="skipped",
+                retryable=False,
+            )
         watch = Stopwatch()
         clean = _Cleaner(self._config.privacy)
-        response = await self._ask(_step_state(context, clean), _STEP_QUESTIONS)
+        state = build_step_state(context, clean, self._config.privacy.max_state_chars)
+        response = await self._ask(state, _STEP_QUESTIONS)
 
         outcome = self._choice(response, "outcome", STEP_OUTCOMES)
         return StepDecision(
@@ -418,6 +391,7 @@ class JevBackend:
             needs_new_approach=self._noul(response, "needs_new_approach"),
             backend=self.name,
             latency_ms=watch.ms,
+            calibrated=True,
             usage=self._usage(response.usage),
             notes=self._notes(response, clean),
         )
@@ -440,11 +414,15 @@ class JevBackend:
                     model=jev.model,
                     retry=RetryPolicy(
                         max_retries=max(0, jev.max_retries),
-                        # Cap the whole retry sequence, not just one attempt, so a
-                        # flapping provider cannot outlive the decision budget by
-                        # an unbounded margin. decisions.budget_ms stays the
-                        # chain's to enforce.
-                        timeout=jev.timeout_s * (max(0, jev.max_retries) + 1),
+                        backoff_max=0.5,
+                        # The whole retry sequence gets at most half the decision
+                        # budget. Jev answers in about a tenth of a second when it
+                        # is healthy; when it is not, the other half is what the
+                        # local backend needs (~3s here) to answer instead.
+                        timeout=min(
+                            jev.timeout_s * (max(0, jev.max_retries) + 1),
+                            self._config.decisions.budget_ms / 2000.0,
+                        ),
                     ),
                     timeout=jev.timeout_s,
                     transport=self._transport,
@@ -457,7 +435,7 @@ class JevBackend:
         client = self._ensure_client()
         try:
             return await client.system_one(state, questions)
-        except (TypeSafeError, httpx2.HTTPError) as error:
+        except TypeSafeError as error:
             raise self._translate(error) from error
 
     async def aclose(self) -> None:
@@ -477,7 +455,7 @@ class JevBackend:
             raise self._missing(response, name, "choice")
         if answer.choice not in allowed:
             raise self._error(
-                f"{name}: unknown label {answer.choice[:_MAX_DETAIL_CHARS]!r}",
+                f"{name}: unknown label {answer.choice[:40]!r}",
                 kind="invalid",
                 retryable=False,
             )
@@ -487,23 +465,24 @@ class JevBackend:
         answer = response.scores.get(name)
         if answer is None:
             raise self._missing(response, name, "score")
-        if not 0.0 <= answer.score <= levels - 1:
+        top = levels - 1
+        if not -_RANGE_TOLERANCE <= answer.score <= top + _RANGE_TOLERANCE:
             raise self._error(
-                f"{name}: score {answer.score} outside 0..{levels - 1}",
+                f"{name}: score {answer.score} outside 0..{top}",
                 kind="invalid",
                 retryable=False,
             )
-        return answer
+        return answer.model_copy(update={"score": min(max(answer.score, 0.0), float(top))})
 
     def _noul(self, response: SystemOneResponse, name: str) -> float:
         answer = response.nouls.get(name)
         if answer is None:
             raise self._missing(response, name, "noul")
-        if not 0.0 <= answer.noul <= 1.0:
+        if not -_RANGE_TOLERANCE <= answer.noul <= 1.0 + _RANGE_TOLERANCE:
             raise self._error(
                 f"{name}: probability {answer.noul} outside 0..1", kind="invalid", retryable=False
             )
-        return answer.noul
+        return min(max(answer.noul, 0.0), 1.0)
 
     def _missing(self, response: SystemOneResponse, name: str, expected: str) -> BackendError:
         """A question that came back absent or as the wrong answer type.

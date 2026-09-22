@@ -108,9 +108,15 @@ cache_max_entries = 512
 [decisions.jev]
 # auto = on when TYPESAFE_API_KEY is set, otherwise reported as unconfigured.
 enabled = "auto"
+# jev-latest currently resolves to jev-1.13.0. Pin the versioned id once the
+# step thresholds have been evaluated against it, so an alias move cannot
+# silently shift answers the thresholds were tuned on (docs.typesafe.ai/models).
 model = "jev-latest"
-timeout_s = 4.0
-max_retries = 2
+# Healthy Jev answers in about a tenth of a second. Two seconds and one retry is
+# generous, and the SDK's whole retry sequence is also capped at half of
+# decisions.budget_ms, so a failing provider leaves time for the local backend.
+timeout_s = 2.0
+max_retries = 1
 # Consecutive failures before the backend is skipped, and for how long.
 breaker_failures = 3
 breaker_cooldown_s = 60.0

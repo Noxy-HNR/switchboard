@@ -12,6 +12,8 @@ hand-built model lets a test say "this one is slow and strong" in one line.
 
 from __future__ import annotations
 
+import pytest
+
 from switchboard.config import Config
 from switchboard.decisions.schema import TaskDecision
 from switchboard.policy import RouteRequest, RoutingPolicy, SessionState
@@ -476,3 +478,79 @@ def test_candidates_expose_their_arithmetic() -> None:
     assert set(described) == {"fast-9b", "deep-27b", "med-27b"}
     for item in described.values():
         assert {"quality", "switch_s", "generate_s", "utility", "feasible"} <= set(item)
+
+
+# --- calibrated distributions -------------------------------------------------
+
+
+def calibrated(domain_probabilities: dict[str, float], level_probabilities: dict[str, float]) -> TaskDecision:
+    """A Jev-shaped decision: calibrated distributions plus their point summary."""
+    top = max(domain_probabilities, key=domain_probabilities.get)
+    mean = sum(int(level) * p for level, p in level_probabilities.items())
+    return TaskDecision(
+        domain=top,
+        domain_probabilities=domain_probabilities,
+        difficulty=mean,
+        difficulty_probabilities=level_probabilities,
+        backend="jev",
+        calibrated=True,
+    )
+
+
+def test_uncalibrated_distributions_are_read_as_point_values() -> None:
+    """Rule scores and next-token distributions must not be used as weights."""
+    config = Config()
+    split = {"general": 0.55, "medical": 0.45}
+    levels = {"1": 0.5, "3": 0.5}
+    heuristic = TaskDecision(
+        domain="general",
+        domain_probabilities=split,
+        difficulty=2.0,
+        difficulty_probabilities=levels,
+        backend="rules",
+        calibrated=False,
+    )
+    point = decision("general", 2.0)
+
+    a = route(config, heuristic)
+    b = route(config, point)
+    assert [c.quality for c in a.candidates] == [c.quality for c in b.candidates]
+    assert a.selected is b.selected
+
+
+def test_a_calibrated_domain_split_leans_toward_the_specialist() -> None:
+    """45% medical should pull toward the medical model; the top answer alone would not."""
+    config = Config()
+    split = calibrated({"general": 0.55, "medical": 0.45}, {"2": 1.0})
+    top_only = decision("general", 2.0)
+
+    med_split = next(c for c in route(config, split).candidates if c.model is MED)
+    med_top = next(c for c in route(config, top_only).candidates if c.model is MED)
+    assert med_split.quality > med_top.quality
+
+
+def test_levels_are_scored_separately_not_at_their_mean() -> None:
+    """Half level 1, half level 3 is not the same task as level 2 on a steep curve."""
+    config = Config()
+    spread = calibrated({"general": 1.0}, {"1": 0.5, "3": 0.5})
+    middle = calibrated({"general": 1.0}, {"2": 1.0})
+
+    fast_spread = next(c for c in route(config, spread).candidates if c.model is FAST)
+    fast_middle = next(c for c in route(config, middle).candidates if c.model is FAST)
+    assert fast_spread.quality != pytest.approx(fast_middle.quality)
+
+
+def test_the_reason_names_a_meaningful_domain_split() -> None:
+    config = Config()
+    result = route(config, calibrated({"general": 0.55, "medical": 0.45}, {"1": 1.0}))
+    assert "general 55%" in result.reason and "medical 45%" in result.reason
+
+
+def test_the_session_floor_applies_to_every_level() -> None:
+    config = Config()
+    session = SessionState(session_id="s", difficulty_ewma=2.8)
+    easy = calibrated({"general": 1.0}, {"0": 0.9, "1": 0.1})
+
+    floored = route(config, easy, resident=DEEP, session=session, now=10_000.0)
+    assert floored.selected is DEEP
+    assert floored.difficulty_used >= 2.8

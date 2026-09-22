@@ -130,7 +130,11 @@ def recommend_next(
         and context.action.strip() in {item.strip() for item in context.previous_attempts}
     )
 
-    if outcome == "success" and decision.complete >= 0.6:
+    # Stopping ends the agent's loop, so a false "complete" is the expensive
+    # mistake: the bar is high, and where the backend gave an outcome
+    # distribution, success must also hold a clear majority of it.
+    success_share = decision.outcome_probabilities.get("success", 1.0)
+    if outcome == "success" and decision.complete >= 0.8 and success_share >= 0.6:
         return "stop_complete", (
             f"The step succeeded and the goal looks satisfied (complete={decision.complete:.2f})."
         ), overrode
@@ -161,15 +165,16 @@ def recommend_next(
             reason = (
                 "the same action was already tried"
                 if repeated
-                else f"the obstacle looks inherent to this approach (needs_new_approach={decision.needs_new_approach:.2f})"
+                else "running it again unchanged would fail the same way "
+                f"(needs_new_approach={decision.needs_new_approach:.2f})"
             )
             return "retry_different", f"The step failed and {reason}.", overrode
         exit_note = (
             f" (exit code {context.exit_code})" if context.exit_code not in (None, 0) else ""
         )
         return "retry", (
-            f"The step failed{exit_note} but the cause looks transient; "
-            f"attempt {attempts} of 3."
+            f"The step failed{exit_note} but the cause looks transient, so a plain "
+            f"retry may clear it; attempt {attempts} of 3."
         ), overrode
 
     # unclear

@@ -16,6 +16,17 @@ measured tokens/sec for generation. Expressing quality in seconds is what lets
 the two be compared at all, and `value_of_quality_s` is the single knob that
 says how much a better answer is worth waiting for.
 
+When the judgment arrives as calibrated distributions (Jev), `P(good answer)`
+is an expectation: every (domain, difficulty level) cell is scored against the
+model's ceiling and weighted by its probability. Collapsing to the top domain
+and the mean difficulty first would throw away exactly what the distributions
+say - a request that is 45% medical should lean toward the medical model by
+that much, and two difficulty distributions with the same mean can deserve
+different models because quality is a curve, not a line. Numbers that are not
+calibrated probabilities (rule-engine scores, a next-token distribution) are
+read as point values only; weighting by them would pass a heuristic off as a
+probability.
+
 Switching then has to clear three separate bars, because the expensive mistake
 on this machine is a needless 20-second restart:
 
@@ -33,10 +44,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from switchboard.config import Config
-from switchboard.decisions.schema import Difficulty, Domain, TaskDecision
+from switchboard.decisions.schema import DOMAINS, Difficulty, Domain, TaskDecision
 from switchboard.registry import ModelEntry, RegistrySnapshot
 from switchboard.system import MemoryStatus
 
@@ -94,6 +105,39 @@ class RouteRequest:
             not self.streaming
             and self.max_tokens is not None
             and 0 < self.max_tokens <= threshold
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskEstimate:
+    """The task as the policy scores it, after the preset has been applied.
+
+    `domain` and `difficulty` are point values: they size the expected answer,
+    appear in every reason sentence and are what `RouteDecision` reports.
+    Expected quality is summed over `domain_weights` x `difficulty_weights`
+    instead. On the point path each holds a single entry of weight 1.0, and the
+    sum reduces exactly to the point-value quality, so there is one scoring
+    formula rather than two that could drift apart.
+    """
+
+    domain: Domain
+    difficulty: float
+    domain_weights: tuple[tuple[Domain, float], ...]
+    # Difficulty levels with the floors already applied, so a level may repeat
+    # or be fractional (a session EWMA of 2.8 lifts level 0 to 2.8).
+    difficulty_weights: tuple[tuple[float, float], ...]
+    # Whether each weight set came from a calibrated distribution; the reason
+    # sentence says so when the domain split was used.
+    weighted_domain: bool = False
+    weighted_difficulty: bool = False
+
+    @classmethod
+    def point(cls, domain: Domain, difficulty: float) -> TaskEstimate:
+        return cls(
+            domain=domain,
+            difficulty=difficulty,
+            domain_weights=((domain, 1.0),),
+            difficulty_weights=((difficulty, 1.0),),
         )
 
 
@@ -181,6 +225,20 @@ class RoutingPolicy:
         ceiling = model.capability_for(domain)
         slope = self._config.policy.capability_slope
         return 1.0 / (1.0 + math.exp(-slope * (ceiling - difficulty)))
+
+    def expected_quality(self, model: ModelEntry, estimate: TaskEstimate) -> float:
+        """P(good answer) averaged over the task's domain and difficulty weights.
+
+        Each cell is scored at its own level and only then weighted. Scoring the
+        mean difficulty instead would interpolate between levels, which a Score
+        answer does not license: the quality curve is steep near a ceiling, so
+        "half level 2, half level 3" is not the same task as "level 2.5".
+        """
+        return sum(
+            domain_weight * level_weight * self.quality(model, domain, level)
+            for domain, domain_weight in estimate.domain_weights
+            for level, level_weight in estimate.difficulty_weights
+        )
 
     def expected_output_tokens(self, difficulty: float, max_tokens: int | None) -> int:
         table = self._config.policy.expected_output_tokens
@@ -273,15 +331,16 @@ class RoutingPolicy:
         *,
         resident: ModelEntry | None,
         memory: MemoryStatus,
-        domain: Domain,
-        difficulty: float,
+        estimate: TaskEstimate,
         value_of_quality_s: float,
     ) -> Candidate:
         candidate = Candidate(model=model, resident=bool(resident and resident.id == model.id))
         self._check_feasible(model, request, decision, memory, resident, candidate)
 
-        output_tokens = self.expected_output_tokens(difficulty, request.max_tokens)
-        candidate.quality = self.quality(model, domain, difficulty)
+        # Answer length stays on the point difficulty: the token table is a
+        # rough per-level guess, and averaging guesses buys no accuracy.
+        output_tokens = self.expected_output_tokens(estimate.difficulty, request.max_tokens)
+        candidate.quality = self.expected_quality(model, estimate)
         candidate.switch_s = 0.0 if candidate.resident else self.switch_seconds(model)
         candidate.generate_s = self.generate_seconds(model, output_tokens)
         candidate.prompt_s = self.prompt_seconds(
@@ -316,7 +375,8 @@ class RoutingPolicy:
         executor_reason: str = "",
     ) -> RouteDecision:
         """Pick the model this request should run on."""
-        domain, difficulty, value = self._policy_inputs(request, decision)
+        estimate, value = self._policy_inputs(request, decision)
+        domain, difficulty = estimate.domain, estimate.difficulty
 
         # An explicit model is an instruction.
         if request.explicit_model is not None:
@@ -364,8 +424,7 @@ class RoutingPolicy:
                 decision,
                 resident=resident,
                 memory=memory,
-                domain=domain,
-                difficulty=difficulty,
+                estimate=estimate,
                 value_of_quality_s=value,
             )
             for model in snapshot.routable()
@@ -403,7 +462,7 @@ class RoutingPolicy:
                 switch_required=False,
                 switch_allowed=True,
                 policy=request.policy,
-                reason=self._stay_reason(best, feasible, domain, difficulty),
+                reason=self._stay_reason(best, feasible, estimate),
                 candidates=candidates,
                 warnings=best.warnings,
                 difficulty_used=difficulty,
@@ -438,7 +497,7 @@ class RoutingPolicy:
             switch_required=True,
             switch_allowed=True,
             policy=request.policy,
-            reason=self._switch_reason(best, resident_candidate, domain, difficulty),
+            reason=self._switch_reason(best, resident_candidate, estimate),
             candidates=candidates,
             warnings=best.warnings,
             difficulty_used=difficulty,
@@ -449,27 +508,51 @@ class RoutingPolicy:
 
     def _policy_inputs(
         self, request: RouteRequest, decision: TaskDecision
-    ) -> tuple[Domain, float, float]:
-        """Domain, difficulty and quality valuation after the preset is applied."""
-        domain: Domain = decision.domain
-        difficulty = decision.difficulty
-        value = self._config.policy.value_of_quality_s
+    ) -> tuple[TaskEstimate, float]:
+        """The task estimate and quality valuation after the preset is applied.
 
+        The presets act the same way on both paths: the medical preset replaces
+        the domain (or the whole domain distribution), and the deep preset and
+        the session's running difficulty are floors, applied to the point value
+        and to every level of a distribution alike.
+        """
+        domain: Domain = decision.domain
+        value = self._config.policy.value_of_quality_s
+        forced_domain: Domain | None = None
         # A conversation that has been hard stays hard: one short follow-up
         # should not drag it back down to the small model and then up again.
-        if request.session.difficulty_ewma is not None:
-            difficulty = max(difficulty, request.session.difficulty_ewma)
+        floor = request.session.difficulty_ewma
 
         if request.policy == "fast":
             # Speed is the point: a better answer is worth only a few seconds.
             value = min(value, 60.0)
         elif request.policy == "deep":
             value = max(value, 1200.0)
-            difficulty = max(difficulty, float(Difficulty.HARD))
+            floor = max(floor if floor is not None else 0.0, float(Difficulty.HARD))
         elif request.policy == "medical":
-            domain = "medical"
+            forced_domain = "medical"
             value = max(value, 900.0)
-        return domain, difficulty, value
+
+        difficulty = decision.difficulty if floor is None else max(decision.difficulty, floor)
+        if forced_domain is not None:
+            domain = forced_domain
+
+        domain_weights: tuple[tuple[Domain, float], ...] | None = None
+        level_weights: tuple[tuple[float, float], ...] | None = None
+        if decision.calibrated:
+            if forced_domain is None:
+                domain_weights = _calibrated_domains(decision.domain_probabilities)
+            level_weights = _calibrated_levels(decision.difficulty_probabilities, floor)
+
+        estimate = TaskEstimate(
+            domain=domain,
+            difficulty=difficulty,
+            domain_weights=domain_weights or ((domain, 1.0),),
+            difficulty_weights=level_weights or ((difficulty, 1.0),),
+            weighted_domain=domain_weights is not None,
+            weighted_difficulty=level_weights is not None,
+        )
+        return estimate, value
 
     def _blocking_guard(
         self,
@@ -556,13 +639,14 @@ class RoutingPolicy:
         return max(0.0, self._config.routing.guards.min_dwell_seconds - elapsed)
 
     def _stay_reason(
-        self, best: Candidate, feasible: list[Candidate], domain: Domain, difficulty: float
+        self, best: Candidate, feasible: list[Candidate], estimate: TaskEstimate
     ) -> str:
-        ceiling = best.model.capability_for(domain)
+        ceiling = best.model.capability_for(estimate.domain)
         others = [candidate for candidate in feasible if candidate.model.id != best.model.id]
         detail = (
-            f"Stayed on {best.model.id}: already loaded, and a {domain} task at difficulty "
-            f"{difficulty:.1f} sits within its {ceiling:.1f} ceiling."
+            f"Stayed on {best.model.id}: already loaded, and a {estimate.domain} task at "
+            f"difficulty {estimate.difficulty:.1f}{_split_note(estimate)} sits within its "
+            f"{ceiling:.1f} ceiling."
         )
         if others:
             runner_up = max(others, key=lambda candidate: candidate.utility)
@@ -576,18 +660,77 @@ class RoutingPolicy:
         self,
         best: Candidate,
         resident_candidate: Candidate | None,
-        domain: Domain,
-        difficulty: float,
+        estimate: TaskEstimate,
     ) -> str:
+        domain, difficulty = estimate.domain, estimate.difficulty
+        split = _split_note(estimate)
         ceiling = best.model.capability_for(domain)
         if resident_candidate is None:
             return (
                 f"Loading {best.model.id}: nothing usable is resident, and its {ceiling:.1f} "
-                f"ceiling covers this {domain} task at difficulty {difficulty:.1f}."
+                f"ceiling covers this {domain} task at difficulty {difficulty:.1f}{split}."
             )
         return (
-            f"Switching to {best.model.id}: this {domain} task at difficulty {difficulty:.1f} is above "
-            f"{resident_candidate.model.id}'s {resident_candidate.model.capability_for(domain):.1f} "
-            f"ceiling. Expected quality {resident_candidate.quality:.2f} -> {best.quality:.2f} is worth "
-            f"the ~{best.switch_s:.0f}s load."
+            f"Switching to {best.model.id}: this {domain} task at difficulty {difficulty:.1f}"
+            f"{split} is above {resident_candidate.model.id}'s "
+            f"{resident_candidate.model.capability_for(domain):.1f} ceiling. Expected quality "
+            f"{resident_candidate.quality:.2f} -> {best.quality:.2f} is worth the "
+            f"~{best.switch_s:.0f}s load."
         )
+
+
+# --- calibrated distributions ---------------------------------------------------
+#
+# Only distributions a backend marks `calibrated` reach these helpers (see
+# `RoutingPolicy._policy_inputs`). The API promises probabilities that sum to
+# approximately one, so both helpers renormalise; a distribution with no usable
+# mass returns None and the policy falls back to the point value.
+
+# A second domain below this share is not worth a mention in the reason.
+_SPLIT_NOTE_MIN_SHARE = 0.15
+
+
+def _calibrated_domains(
+    probabilities: dict[str, float],
+) -> tuple[tuple[Domain, float], ...] | None:
+    weights = [
+        (name, float(value))
+        for name, value in probabilities.items()
+        if name in DOMAINS and value > 0
+    ]
+    total = sum(value for _, value in weights)
+    if not weights or total <= 0:
+        return None
+    ordered = sorted(weights, key=lambda item: item[1], reverse=True)
+    return tuple((cast(Domain, name), value / total) for name, value in ordered)
+
+
+def _calibrated_levels(
+    probabilities: dict[str, float], floor: float | None
+) -> tuple[tuple[float, float], ...] | None:
+    """Difficulty levels as (level, weight), each lifted to the floor if below it."""
+    levels: list[tuple[float, float]] = []
+    for key, value in probabilities.items():
+        try:
+            level = int(key)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= level <= int(Difficulty.HARD) and value > 0:
+            lifted = float(level) if floor is None else max(float(level), floor)
+            levels.append((lifted, float(value)))
+    total = sum(value for _, value in levels)
+    if not levels or total <= 0:
+        return None
+    return tuple((level, value / total) for level, value in levels)
+
+
+def _split_note(estimate: TaskEstimate) -> str:
+    """" (medical 45%, general 55%)" when a calibrated domain split mattered."""
+    if not estimate.weighted_domain:
+        return ""
+    shares = [
+        f"{domain} {weight:.0%}"
+        for domain, weight in estimate.domain_weights
+        if weight >= _SPLIT_NOTE_MIN_SHARE
+    ]
+    return f" ({', '.join(shares)})" if len(shares) > 1 else ""

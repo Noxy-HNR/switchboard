@@ -62,8 +62,8 @@ Three things are kept apart, because conflating them is what makes routers
 mysterious:
 
 1. **Semantic judgments** - what kind of work is this, how hard, does it need
-   tools. Answered by Jev (cloud, if a key is set), then a local backend that
-   reads the resident model's first-token probabilities, then a rule engine
+   tools. Answered by Jev (cloud, if a key is set), then TypeSafe's System One
+   Adapter running on the model already loaded, then a rule engine
    that cannot fail.
 2. **Deterministic facts** - what is loaded, what fits in context, how fast
    each model runs, what a load costs, how much RAM is free. Measured, never
