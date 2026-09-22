@@ -72,7 +72,11 @@ $process = Start-Process -FilePath 'uv' -ArgumentList @('run', 'switchboard', 's
     -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 
-Set-Content -Path $PidFile -Value $process.Id -Encoding UTF8
+# Record the start time with the PID. Windows reuses PIDs, so a bare number in
+# a stale file could name an unrelated process by the time stop.ps1 reads it;
+# the pair (PID, start time) identifies exactly one process, ever.
+$started = (Get-Process -Id $process.Id).StartTime.ToUniversalTime().Ticks
+Set-Content -Path $PidFile -Value "$($process.Id)|$started" -Encoding UTF8
 Write-Host "[*] Switchboard starting (PID $($process.Id))" -ForegroundColor Cyan
 
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)

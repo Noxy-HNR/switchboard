@@ -287,6 +287,13 @@ async def test_request_asks_for_a_json_schema_response_format() -> None:
     schema = response_format["json_schema"]["schema"]
     answers = schema["$defs"]["TypeSafeAnswers"]["properties"]
     assert set(answers) == {"domain", "difficulty", "tool_need", "ambiguity"}
+    # Sampling grammar alone is invisible to the model in llama.cpp. The actual
+    # system prompt must contain the questions and their meaning, not just keys.
+    prompt = "\n".join(m["content"] for m in recorder.body["messages"] if m["role"] == "system")
+    assert DOMAIN_INSTRUCTIONS in prompt
+    assert DOMAIN_CRITERIA["medical"] in prompt
+    assert DIFFICULTY_INSTRUCTIONS in prompt
+    assert sum(m['role'] == 'system' for m in recorder.body['messages']) == 1
 
 
 async def test_request_carries_the_configured_timeout() -> None:
@@ -311,7 +318,7 @@ async def test_state_is_truncated_but_not_redacted() -> None:
     document = recorder.document
     assert secret in document
     assert "REDACTED" not in document
-    assert "chars omitted" in document
+    assert "[... omitted ...]" in document  # the truncation marker from privacy.truncate_middle
     assert len(document) < len(message)
 
 

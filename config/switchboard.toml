@@ -87,10 +87,20 @@ difficulty_ewma_alpha = 0.5
 
 [decisions]
 # Order matters: the first backend that answers wins. Backends not listed are off.
+#
+# "local" is the official TypeSafe System One Adapter over the resident model;
+# "logit" is the experimental first-token-probability backend (off by default,
+# see [decisions.logit]). Measured comparisons live in docs/EXPERIMENT-LOGITS.md.
 backends = ["jev", "local", "rules"]
 # Total budget for the semantic layer per request. Whatever has not answered by
 # then loses to the next backend, and ultimately to the rules backend.
-budget_ms = 4000
+#
+# 6s, because the budget has to cover a failed cloud attempt *and* a local one
+# after it: a Jev auth failure costs ~1.2s here and a local decision ~3s, and at
+# 4s the local backend was being squeezed out by a cloud provider that was
+# already broken. Most requests never spend any of this - the fast path answers
+# them in under a millisecond.
+budget_ms = 6000
 # Identical requests within this window reuse the previous decision.
 cache_ttl_s = 300
 cache_max_entries = 512
@@ -122,8 +132,11 @@ answer_mode = "discrete"
 max_output_tokens = 512
 
 [decisions.logit]
-# Experimental: read first-token probabilities from llama.cpp instead of generating
-# JSON. Off until validated on this machine - see docs/EXPERIMENT-LOGITS.md.
+# Experimental: reads first-token probabilities from llama.cpp instead of
+# generating JSON. Off by default because its numbers are a next-token
+# distribution, not calibrated probabilities - they sit near 0.99 almost always
+# - and the brief is explicit that uncalibrated numbers must not be passed off
+# as probabilities. See docs/EXPERIMENT-LOGITS.md before turning it on.
 enabled = false
 timeout_s = 15.0
 top_logprobs = 20
@@ -134,13 +147,26 @@ skip_when_busy = true
 # Deterministic keyword/shape heuristics. Always available, never fails.
 enabled = true
 
+[decisions.fast_path]
+# Ask the rule engine first and stop there when it is confident the request is
+# easy. An easy request stays on the resident model whatever a semantic backend
+# would have said, and a semantic backend costs ~2.3s here, so those seconds
+# would buy nothing. Everything else goes through the full chain.
+enabled = true
+max_difficulty = 1.0
+min_confidence = 0.5
+# Domains that always get the full chain regardless: a wrong domain here means
+# the specialist model is never reached, and the keyword lists are weakest on
+# clinical language.
+always_confirm_domains = ["medical"]
+
 [privacy]
 # Redact secrets from anything leaving the process (cloud state and stored previews).
 redact = true
 # Hard cap on the state sent to a cloud decision provider.
 max_state_chars = 1500
 # Store a short redacted preview of requests alongside the hash, for debugging.
-store_previews = true
+store_previews = false
 preview_chars = 80
 # Set false to keep every request on this machine even when a key is configured.
 allow_cloud = true

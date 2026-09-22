@@ -271,9 +271,25 @@ async def test_probes_ask_for_one_token_with_logprobs_and_no_thinking() -> None:
         assert recorder.requests[index].url.path == "/v1/chat/completions"
 
 
-async def test_top_logprobs_is_clamped_to_what_llama_cpp_accepts() -> None:
+def test_top_logprobs_beyond_what_llama_cpp_accepts_is_a_config_error() -> None:
+    """The first line of defence: the value cannot be configured at all."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        make_config(top_logprobs=200)
+
+
+async def test_top_logprobs_is_still_clamped_if_validation_is_bypassed() -> None:
+    """Defence in depth: a config built without validation still cannot overshoot.
+
+    This used to be the only guard, reached through an ordinary config. Config
+    validation now rejects the value first (above), so the clamp is exercised by
+    assigning past validation, which is what programmatic construction can do.
+    """
+    config = make_config()
+    config.decisions.logit.top_logprobs = 200  # assignment is not validated
     recorder = answering(TASK_TOPS)
-    async with backend_for(recorder, make_config(top_logprobs=200)) as backend:
+    async with backend_for(recorder, config) as backend:
         await backend.decide_task(TaskContext(message="hello"), READY)
     assert recorder.body(0)["top_logprobs"] == MAX_TOP_LOGPROBS
 
@@ -315,7 +331,7 @@ async def test_state_is_truncated_but_not_redacted() -> None:
     document = recorder.document(0)
     assert secret in document
     assert "REDACTED" not in document
-    assert "chars omitted" in document
+    assert "[... omitted ...]" in document  # the truncation marker from privacy.truncate_middle
 
 
 # --- invalid mass accounting ------------------------------------------------

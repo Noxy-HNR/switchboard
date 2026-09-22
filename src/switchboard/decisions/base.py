@@ -133,7 +133,17 @@ class StepContext:
     session_id: str | None = None
 
     def cache_key(self) -> tuple[str, ...]:
-        return (self.goal.strip(), self.action.strip(), self.result.strip(), str(self.attempt))
+        # Everything a backend is shown is part of the key: the same step text
+        # with a different exit code or retry history is a different question.
+        return (
+            self.goal.strip(),
+            self.action.strip(),
+            self.result.strip(),
+            str(self.attempt),
+            str(self.exit_code),
+            "␟".join(item.strip() for item in self.previous_attempts),
+            "" if self.elapsed_s is None else f"{self.elapsed_s:.3f}",
+        )
 
 
 @runtime_checkable

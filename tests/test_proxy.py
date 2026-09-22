@@ -208,11 +208,80 @@ async def test_an_explicit_other_model_switches(config: Config) -> None:
         assert response.headers["x-switchboard-switched"] == "true"
 
 
-async def test_an_unknown_model_is_routed_rather_than_rejected(harness: Harness) -> None:
+async def test_an_unknown_model_is_rejected(harness: Harness) -> None:
+    """A name the client chose is not re-routed: that would be a substitution.
+
+    The answer is the one the OpenAI API gives, so SDKs surface it properly, and
+    it comes before routing: nothing is decided, recorded or forwarded.
+    """
     response = await harness.client.post("/v1/chat/completions", json=chat_body(model="gpt-4o"))
+
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert error["code"] == "model_not_found"
+    assert error["type"] == "invalid_request_error"
+    assert "gpt-4o" in error["message"]
+    assert harness.llama.requests == []
+    assert harness.router.store.recent_routes() == []
+
+
+async def test_a_request_without_a_model_is_routed_automatically(harness: Harness) -> None:
+    body = chat_body()
+    del body["model"]
+    response = await harness.client.post("/v1/chat/completions", json=body)
 
     assert response.status_code == 200
     assert response.headers["x-switchboard-model"] in {"fast-9b", "deep-27b", "med-27b"}
+    assert len(harness.llama.requests) == 1
+
+
+async def test_a_streamed_explicit_model_that_cannot_load_is_a_409(config: Config) -> None:
+    """Before the stream starts the refusal can still be a real status code."""
+    llama = FakeLlama(resident=FAST)
+    async with Harness(config, llama, FakeExecutor(ok=False)) as harness:
+        response = await harness.client.post(
+            "/v1/chat/completions", json=chat_body(model="deep-27b", stream=True)
+        )
+
+        assert response.status_code == 409
+        error = response.json()["error"]
+        assert error["type"] == "model_unavailable"
+        assert "deep-27b" in error["message"]
+        assert "reverses a string" not in error["message"]
+        assert response.headers["x-switchboard-route-id"]
+        assert llama.requests == []
+        row = harness.router.store.recent_routes(limit=1)[0]
+        assert row["downstream_status"] == 409
+        assert row["error"] == "requested model deep-27b could not be loaded"
+
+
+async def test_a_keepalive_stream_reports_an_unloadable_explicit_model_in_band(
+    config: Config,
+) -> None:
+    """After keepalives the 200 is already sent, so the refusal is an SSE frame."""
+    from switchboard.proxy import _stream_with_keepalive
+
+    llama = FakeLlama(resident=FAST)
+    async with Harness(config, llama, FakeExecutor(ok=False)) as harness:
+        deep = harness.router.registry().by_id("deep-27b")
+        plan = await harness.router.route(
+            build_task_context(chat_body(), chars_per_token=3.6, session_id=None),
+            explicit_model=deep,
+            requested_model="deep-27b",
+            streaming=True,
+        )
+        routed: asyncio.Future = asyncio.get_running_loop().create_future()
+        routed.set_result(plan)
+
+        request = chat_body(model="deep-27b", stream=True)
+        stream = _stream_with_keepalive(harness.router, routed, request, "deep-27b", True)
+        body = b"".join([chunk async for chunk in stream])
+
+        frame = json.loads(body.split(b"\n\n")[0].removeprefix(b"data: "))
+        assert frame["error"]["type"] == "model_unavailable"
+        assert body.endswith(DONE_FRAME)
+        assert llama.requests == []
+        assert harness.router.store.get_route(plan.route_id)["downstream_status"] == 409
 
 
 # --- streaming --------------------------------------------------------------
@@ -251,6 +320,58 @@ async def test_the_stream_generator_yields_as_chunks_arrive(config: Config) -> N
             rest += chunk
 
     assert first + rest == b"".join(llama.stream_chunks)
+
+
+async def test_a_client_that_disconnects_mid_stream_is_still_recorded(config: Config) -> None:
+    """Closing the stream early still closes the route row and the reservation.
+
+    Starlette ends an abandoned stream by closing or cancelling its generator, so
+    the recording has to survive that rather than sit after the last yield.
+    """
+    from switchboard.proxy import _stream_response
+
+    llama = FakeLlama(resident=FAST)
+    llama.stream_gate = asyncio.Event()
+    llama.stream_chunks = [sse_chunk(f"tok{index}") for index in range(4)] + [DONE_FRAME]
+
+    async with Harness(config, llama, FakeExecutor()) as harness:
+        plan = await harness.router.route(
+            build_task_context(chat_body(), chars_per_token=3.6, session_id=None),
+            streaming=True,
+            source="proxy",
+        )
+        generator = _stream_response(harness.router, plan, chat_body(stream=True))
+        first = await asyncio.wait_for(anext(generator), timeout=5.0)
+        assert b"tok0" in first
+
+        await generator.aclose()
+
+        assert harness.router.inflight_count == 0
+        row = harness.router.store.get_route(plan.route_id)
+        assert row["error"] == "client disconnected"
+        assert row["downstream_status"] == 200
+        assert row["tokens_out"] == 1, "what was relayed before the disconnect still counts"
+
+
+async def test_a_non_streaming_request_is_not_sent_after_the_model_changed(config: Config) -> None:
+    """Residency is re-read under the reservation, not trusted from routing."""
+    from switchboard.proxy import _complete
+
+    llama = FakeLlama(resident=FAST)
+    async with Harness(config, llama, FakeExecutor()) as harness:
+        plan = await harness.router.route(
+            build_task_context(chat_body(), chars_per_token=3.6, session_id=None),
+            source="proxy",
+        )
+        assert plan.model_id == "fast-9b"
+        llama.resident = DEEP
+
+        response = await _complete(harness.router, plan, chat_body())
+
+        assert response.status_code == 409
+        assert b"deep-27b" in response.body
+        assert llama.requests == []
+        assert harness.router.inflight_count == 0
 
 
 async def test_a_stream_is_relayed_byte_for_byte(config: Config) -> None:
@@ -302,6 +423,10 @@ async def test_an_upstream_status_is_passed_through(config: Config) -> None:
         assert response.status_code == 500
         assert response.json()["error"]["message"] == "upstream said no"
         assert response.headers["x-switchboard-model"]
+        # The client gets llama.cpp's words; the database only the status,
+        # because an upstream error body can quote the prompt back.
+        row = harness.router.store.recent_routes(limit=1)[0]
+        assert row["error"] == "upstream returned HTTP 500"
 
 
 async def test_an_unreachable_upstream_becomes_a_502(config: Config) -> None:
@@ -312,6 +437,26 @@ async def test_an_unreachable_upstream_becomes_a_502(config: Config) -> None:
 
         assert response.status_code == 502
         assert response.json()["error"]["type"] == "upstream_error"
+        row = harness.router.store.recent_routes(limit=1)[0]
+        assert row["downstream_status"] == 502
+        assert row["error"] == "upstream unreachable (ConnectError)"
+
+
+async def test_an_unreachable_upstream_ends_a_stream_and_records_only_its_kind(
+    config: Config,
+) -> None:
+    llama = FakeLlama(resident=FAST)
+    llama.connection_error = True
+    async with Harness(config, llama, FakeExecutor()) as harness:
+        response = await harness.client.post(
+            "/v1/chat/completions", json=chat_body(stream=True)
+        )
+
+        assert b"upstream_error" in response.content
+        assert response.content.endswith(DONE_FRAME)
+        row = harness.router.store.recent_routes(limit=1)[0]
+        assert row["downstream_status"] == 502
+        assert row["error"] == "upstream unreachable (ConnectError)"
 
 
 async def test_a_streaming_upstream_error_ends_the_stream(config: Config) -> None:

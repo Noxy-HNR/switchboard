@@ -16,9 +16,13 @@ The rules it follows:
   paths are exactly the ones the shared question text names. Unrelated context
   costs accuracy, so the system prompt, the session id and the token estimate
   are deliberately left at home.
-* **Redact before send, always.** Every string in the state goes through
-  `privacy.prepare_cloud_text` first. *Which kinds* of secret were removed is
-  recorded in the decision notes; the secret itself is recorded nowhere. Error
+* **Minimize, then redact, before send.** Pasted machine output - tracebacks,
+  code blocks, terminal runs, key material, whole JSON documents - is replaced
+  by a one-line description and never leaves the machine; the user's own words
+  around it still go, because that is what the judgments are about. What is
+  left is redacted and cut to one shared character budget. *Which kinds* of
+  content were withheld is recorded in the decision notes; the content itself
+  is recorded nowhere. Error
   messages are built from provider metadata (status, request id) rather than
   response bodies, so nothing echoed back can smuggle prompt text into a log.
 * **Raise, never guess.** A missing, mistyped or out-of-range answer is a
@@ -92,7 +96,7 @@ from switchboard.decisions.schema import (
     StepOutcome,
     TaskDecision,
 )
-from switchboard.privacy import prepare_cloud_text
+from switchboard.privacy import minimize_for_cloud, prepare_cloud_text
 
 BACKEND_NAME: Final = "jev"
 
@@ -157,28 +161,50 @@ _STEP_QUESTIONS: Final[dict[str, Question]] = {
 class _Cleaner:
     """Runs every outbound string through the privacy rules, remembering the kinds.
 
-    One instance per call, so the note it produces describes that request only.
+    Three steps, in order, for every string that goes into the state:
+
+    1. **Machine output stays local.** Tracebacks, code blocks, terminal runs,
+       key material and whole JSON/XML documents are replaced by a one-line
+       description ("[Python traceback kept local: 23 lines]"). This is not
+       switchable: the rule is that raw dumps never leave the machine, and the
+       judgments only need to know such content is *there*, not what it says.
+    2. **Secrets are redacted** from what remains (``privacy.redact``).
+    3. **The whole state shares one character budget** (``privacy.max_state_chars``),
+       spent in the order fields are cleaned - the current message first.
+
+    One instance per call, so the notes it produces describe that request only.
     """
 
-    __slots__ = ("_max_chars", "_redact", "kinds")
+    __slots__ = ("_max_chars", "_redact", "kinds", "kept_local")
 
     def __init__(self, privacy: PrivacyConfig) -> None:
         self._max_chars = privacy.max_state_chars
         self._redact = privacy.redact
         self.kinds: list[str] = []
+        self.kept_local: list[str] = []
 
     def __call__(self, text: str) -> str:
+        minimized, kept = minimize_for_cloud(text)
+        for kind in kept:
+            if kind not in self.kept_local:
+                self.kept_local.append(kind)
         prepared, kinds = prepare_cloud_text(
-            text, max_chars=self._max_chars, do_redact=self._redact
+            minimized, max_chars=self._max_chars, do_redact=self._redact
         )
+        self._max_chars = max(0, self._max_chars - len(prepared))
         for kind in kinds:
             if kind not in self.kinds:
                 self.kinds.append(kind)
         return prepared
 
-    def note(self) -> str | None:
-        """A storable record of what was removed - kinds only, never the value."""
-        return f"redacted: {', '.join(self.kinds)}" if self.kinds else None
+    def notes(self) -> list[str]:
+        """Storable records of what was withheld - kinds only, never the content."""
+        notes: list[str] = []
+        if self.kept_local:
+            notes.append(f"kept local: {', '.join(self.kept_local)}")
+        if self.kinds:
+            notes.append(f"redacted: {', '.join(self.kinds)}")
+        return notes
 
 
 def _tool_names(names: list[str]) -> list[str]:
@@ -200,7 +226,7 @@ def _task_state(context: TaskContext, clean: _Cleaner) -> dict[str, Any]:
     request: dict[str, Any] = {
         "message": clean(context.message),
         "previous_message": clean(context.prior_message) if context.prior_message else None,
-        "available_tools": _tool_names(context.tool_names) or None,
+        "available_tools": [clean(name) for name in _tool_names(context.tool_names)] or None,
         "turn": context.turn_index,
         "has_images": context.has_images,
     }
@@ -283,7 +309,7 @@ def _describe(error: BaseException) -> str:
         detail = f"{type(error).__name__} status={error.status}"
         request_id = error.request_id
         return f"{detail} request={request_id}" if request_id else detail
-    return f"{type(error).__name__}: {error}"
+    return type(error).__name__
 
 
 def _request_id(response: SystemOneResponse) -> str | None:
@@ -515,9 +541,7 @@ class JevBackend:
         request_id = _request_id(response)
         if request_id:
             notes.append(f"request: {request_id}")
-        redacted = clean.note()
-        if redacted:
-            notes.append(redacted)
+        notes.extend(clean.notes())
         return notes
 
     # --- errors -------------------------------------------------------------

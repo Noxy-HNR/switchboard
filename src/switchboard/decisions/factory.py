@@ -16,19 +16,15 @@ import importlib
 import logging
 from typing import Any
 
-from switchboard.config import Config
+from switchboard.config import KNOWN_BACKENDS, Config
 from switchboard.decisions.chain import DecisionChain
 from switchboard.upstream import LlamaClient
 
 logger = logging.getLogger("switchboard.decisions")
 
-# name -> module in this package.
-BACKEND_MODULES: dict[str, str] = {
-    "jev": "jev",
-    "local": "local",
-    "logit": "logit",
-    "rules": "rules",
-}
+# name -> module in this package. Each backend lives in a module of its own
+# name; the config validates against the same list, so they cannot drift.
+BACKEND_MODULES: dict[str, str] = {name: name for name in KNOWN_BACKENDS}
 
 FLOOR_BACKEND = "rules"
 

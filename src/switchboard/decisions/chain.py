@@ -20,6 +20,9 @@ means:
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
@@ -125,15 +128,37 @@ class Breaker:
         }
 
 
+def _cache_key(kind: str, context: TaskContext | StepContext, facts: BackendFacts) -> str:
+    """A digest of everything that determines the answer, and nothing readable.
+
+    The raw request text is part of what makes two questions the same, but it
+    has no business sitting in a long-lived dictionary where a debugger, a
+    crash dump or a `repr` can see it. The resident model is included because
+    the local backends *are* the resident model: a judgment made by one model
+    is not the answer another would give.
+    """
+    material = json.dumps(
+        [kind, facts.resident_model_id, *context.cache_key()],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 class _Cache:
-    """Tiny TTL cache keyed by the question and the text it is about."""
+    """Tiny TTL cache of decisions, keyed by digest.
+
+    Values are copied on the way in and on the way out. A decision is a mutable
+    dataclass and callers append notes to it; without the copies, one caller's
+    annotation would appear in every later cache hit.
+    """
 
     def __init__(self, ttl_s: float, max_entries: int) -> None:
         self._ttl_s = ttl_s
         self._max_entries = max_entries
-        self._entries: dict[tuple[Any, ...], tuple[float, Any]] = {}
+        self._entries: dict[str, tuple[float, Any]] = {}
 
-    def get(self, key: tuple[Any, ...]) -> Any | None:
+    def get(self, key: str) -> Any | None:
         entry = self._entries.get(key)
         if entry is None:
             return None
@@ -141,16 +166,16 @@ class _Cache:
         if time.monotonic() - stored_at > self._ttl_s:
             self._entries.pop(key, None)
             return None
-        return value
+        return copy.deepcopy(value)
 
-    def put(self, key: tuple[Any, ...], value: Any) -> None:
+    def put(self, key: str, value: Any) -> None:
         if len(self._entries) >= self._max_entries:
             # Cheap eviction: drop the oldest quarter rather than tracking LRU.
             for stale in sorted(self._entries, key=lambda k: self._entries[k][0])[
                 : max(1, self._max_entries // 4)
             ]:
                 self._entries.pop(stale, None)
-        self._entries[key] = (time.monotonic(), value)
+        self._entries[key] = (time.monotonic(), copy.deepcopy(value))
 
     def clear(self) -> None:
         self._entries.clear()
@@ -202,11 +227,17 @@ class DecisionChain:
         *,
         use_cache: bool,
     ) -> DecisionResult:
-        key = (kind, *context.cache_key())
+        key = _cache_key(kind, context, facts)
         if use_cache:
             cached = self._cache.get(key)
             if cached is not None:
                 return DecisionResult(decision=cached, cached=True)
+
+        fast = await self._fast_path(kind, context, facts)
+        if fast is not None:
+            if use_cache:
+                self._cache.put(key, fast.decision)
+            return fast
 
         attempts: list[Attempt] = []
         deadline = time.monotonic() + self._config.decisions.budget_ms / 1000.0
@@ -247,7 +278,7 @@ class DecisionChain:
                 )
                 continue
 
-            availability = await backend.availability(facts)
+            availability = await self._availability_of(backend, facts)
             self._availability[backend.name] = availability
             if not availability.ready:
                 attempts.append(
@@ -319,6 +350,62 @@ class DecisionChain:
         )
         return DecisionResult(decision=fallback, attempts=attempts)
 
+    async def _fast_path(
+        self, kind: Kind, context: TaskContext | StepContext, facts: BackendFacts
+    ) -> DecisionResult | None:
+        """Answer cheaply when the rule engine already settles the question.
+
+        Measured on this machine: a semantic backend costs about 2.3 seconds per
+        task decision, and the rule engine costs half a millisecond. For a
+        request the rules are confident is easy, those seconds buy nothing - an
+        easy request stays on whatever model is already loaded whatever a
+        semantic backend would have said - so they are not spent.
+
+        Two exclusions keep this from quietly degrading the interesting cases:
+        anything the rules are unsure about, and anything that looks medical,
+        where a wrong domain means the specialist model is never reached and the
+        keyword lists are weakest.
+        """
+        settings = self._config.decisions.fast_path
+        if kind != "task" or not settings.enabled:
+            return None
+        floor = next((b for b in self._backends if b.name == "rules"), None)
+        if floor is None or floor is self._backends[0]:
+            # Nothing cheaper to try first, or it is already first anyway.
+            return None
+
+        started = time.perf_counter()
+        try:
+            decision = await floor.decide_task(context, facts)  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001 - the normal chain will handle it
+            return None
+
+        confidence = decision.domain_confidence or 0.0
+        if (
+            decision.difficulty > settings.max_difficulty
+            or confidence < settings.min_confidence
+            or decision.domain in settings.always_confirm_domains
+        ):
+            return None
+
+        decision.notes.append(
+            f"fast path: rules settled this in {(time.perf_counter() - started) * 1000:.1f} ms "
+            f"(difficulty {decision.difficulty:.2f} <= {settings.max_difficulty}, "
+            f"confidence {confidence:.2f}); slower backends were not consulted"
+        )
+        return DecisionResult(
+            decision=decision,
+            attempts=[
+                Attempt(
+                    backend=floor.name,
+                    kind=kind,
+                    ok=True,
+                    latency_ms=decision.latency_ms,
+                    usage=dict(decision.usage),
+                )
+            ],
+        )
+
     async def _call(
         self,
         backend: DecisionBackend,
@@ -358,15 +445,25 @@ class DecisionChain:
             }
         return report
 
+    @staticmethod
+    async def _availability_of(backend: DecisionBackend, facts: BackendFacts) -> Availability:
+        """Ask a backend whether it can run, surviving a backend that raises.
+
+        A broken availability check must not take routing down with it, and its
+        message must not reach the health view: an exception raised from inside a
+        backend may carry whatever text it was holding. Only the type is kept.
+        """
+        try:
+            return await backend.availability(facts)
+        except Exception as error:  # noqa: BLE001 - see docstring
+            return Availability.unavailable(
+                f"availability check failed ({type(error).__name__})"
+            )
+
     async def probe(self, facts: BackendFacts) -> dict[str, dict[str, Any]]:
         """Refresh availability for every backend without making a decision."""
         for backend in self._backends:
-            try:
-                self._availability[backend.name] = await backend.availability(facts)
-            except Exception as error:  # noqa: BLE001
-                self._availability[backend.name] = Availability.unavailable(
-                    f"{type(error).__name__}: {error}"
-                )
+            self._availability[backend.name] = await self._availability_of(backend, facts)
         return self.health()
 
     def clear_cache(self) -> None:

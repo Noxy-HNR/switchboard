@@ -4,8 +4,13 @@ Values come from three places, later ones winning: ``config/switchboard.toml``,
 a ``.env`` file next to it, and the process environment. Environment overrides
 are named ``SWITCHBOARD_<SECTION>__<KEY>``.
 
+Invalid configuration fails here, at load time, rather than as strange
+behaviour later: a mistyped key, a port out of range, an unknown decision
+backend or an environment value like ``flase`` all raise before the service
+binds a socket or sends a request anywhere.
+
 The only secret Switchboard reads is ``TYPESAFE_API_KEY``, and it is never
-written to the database, the logs, or the config file.
+written to the database, the logs, the config file, or a ``repr``.
 """
 
 from __future__ import annotations
@@ -16,7 +21,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from switchboard.decisions.schema import DOMAINS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "switchboard.toml"
@@ -24,110 +31,158 @@ DEFAULT_MODELS_PATH = PROJECT_ROOT / "config" / "models.toml"
 
 ENV_PREFIX = "SWITCHBOARD_"
 
+# Every decision backend Switchboard ships. The factory builds from this list,
+# so a name that is not here cannot be configured by accident.
+KNOWN_BACKENDS: tuple[str, ...] = ("jev", "local", "logit", "rules")
 
-class ServerConfig(BaseModel):
+# The store truncates previews to this regardless; the setting may only tighten it.
+MAX_PREVIEW_CHARS = 200
+
+
+class _Section(BaseModel):
+    """A config table: unknown keys are errors, and so are NaN and infinity."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class ServerConfig(_Section):
     host: str = "127.0.0.1"
-    port: int = 8002
+    port: int = Field(default=8002, ge=1, le=65535)
 
 
-class UpstreamConfig(BaseModel):
+class UpstreamConfig(_Section):
     base_url: str = "http://127.0.0.1:10000"
-    connect_timeout_s: float = 5.0
-    request_timeout_s: float = 900.0
-    health_ttl_s: float = 2.0
+    connect_timeout_s: float = Field(default=5.0, gt=0)
+    request_timeout_s: float = Field(default=900.0, gt=0)
+    health_ttl_s: float = Field(default=2.0, ge=0)
 
 
-class StackConfig(BaseModel):
+class StackConfig(_Section):
     ai_root: Path = Path(r"C:\AI")
     models_dir: Path = Path(r"C:\AI\models")
     models_config: Path = Path(r"C:\AI\Config\models.json")
     dashboard_url: str = "http://127.0.0.1:9090"
 
 
-class GuardConfig(BaseModel):
-    hysteresis_seconds: float = 12.0
-    min_quality_gain: float = 0.08
-    min_dwell_seconds: float = 120.0
+class GuardConfig(_Section):
+    hysteresis_seconds: float = Field(default=12.0, ge=0)
+    min_quality_gain: float = Field(default=0.08, ge=0, le=1)
+    min_dwell_seconds: float = Field(default=120.0, ge=0)
     never_switch_when_busy: bool = True
-    max_switch_wait_s: float = 300.0
-    utility_max_tokens: int = 160
+    max_switch_wait_s: float = Field(default=300.0, gt=0)
+    utility_max_tokens: int = Field(default=160, ge=0)
     ram_guard: Literal["warn", "block"] = "warn"
-    ram_headroom_gb: float = 1.0
+    ram_headroom_gb: float = Field(default=1.0, ge=0)
 
 
-class RoutingConfig(BaseModel):
+class RoutingConfig(_Section):
     mode: Literal["active", "shadow", "off"] = "active"
     allow_explicit_switch: bool = True
-    default_policy: str = "auto"
+    default_policy: Literal["auto", "fast", "deep", "medical"] = "auto"
     guards: GuardConfig = Field(default_factory=GuardConfig)
 
 
-class PolicyConfig(BaseModel):
-    value_of_quality_s: float = 400.0
-    capability_slope: float = 2.5
-    generation_wait_weight: float = 0.35
-    expected_output_tokens: list[int] = [80, 300, 700, 1200]
-    chars_per_token: float = 3.6
-    default_load_s_per_gb: float = 1.7
-    difficulty_ewma_alpha: float = 0.5
+class PolicyConfig(_Section):
+    value_of_quality_s: float = Field(default=400.0, ge=0)
+    capability_slope: float = Field(default=2.5, gt=0)
+    generation_wait_weight: float = Field(default=0.35, ge=0, le=1)
+    expected_output_tokens: list[int] = Field(default=[80, 300, 700, 1200], min_length=1)
+    chars_per_token: float = Field(default=3.6, gt=0)
+    default_load_s_per_gb: float = Field(default=1.7, ge=0)
+    difficulty_ewma_alpha: float = Field(default=0.5, gt=0, le=1)
+
+    @field_validator("expected_output_tokens")
+    @classmethod
+    def _positive_lengths(cls, value: list[int]) -> list[int]:
+        if any(item <= 0 for item in value):
+            raise ValueError("expected_output_tokens must all be positive")
+        return value
 
 
-class JevConfig(BaseModel):
+class JevConfig(_Section):
     enabled: bool | Literal["auto"] = "auto"
     model: str = "jev-latest"
-    timeout_s: float = 4.0
-    max_retries: int = 2
-    breaker_failures: int = 3
-    breaker_cooldown_s: float = 60.0
-    usd_per_input_mtok: float = 0.042
+    timeout_s: float = Field(default=4.0, gt=0)
+    max_retries: int = Field(default=2, ge=0, le=10)
+    breaker_failures: int = Field(default=3, ge=1)
+    breaker_cooldown_s: float = Field(default=60.0, ge=0)
+    usd_per_input_mtok: float = Field(default=0.042, ge=0)
 
 
-class LocalDecisionConfig(BaseModel):
+class LocalDecisionConfig(_Section):
     enabled: bool = True
-    timeout_s: float = 20.0
-    min_resident_gen_tps: float = 15.0
+    timeout_s: float = Field(default=20.0, gt=0)
+    min_resident_gen_tps: float = Field(default=15.0, ge=0)
     skip_when_busy: bool = True
     answer_mode: Literal["discrete", "probabilities"] = "discrete"
-    max_output_tokens: int = 512
+    max_output_tokens: int = Field(default=512, ge=16)
 
 
-class LogitDecisionConfig(BaseModel):
+class LogitDecisionConfig(_Section):
     enabled: bool = False
-    timeout_s: float = 15.0
-    top_logprobs: int = 20
-    min_resident_gen_tps: float = 0.0
+    timeout_s: float = Field(default=15.0, gt=0)
+    top_logprobs: int = Field(default=20, ge=2, le=20)
+    min_resident_gen_tps: float = Field(default=0.0, ge=0)
     skip_when_busy: bool = True
 
 
-class RulesConfig(BaseModel):
+class RulesConfig(_Section):
     enabled: bool = True
 
 
-class DecisionsConfig(BaseModel):
+class FastPathConfig(_Section):
+    enabled: bool = True
+    max_difficulty: float = Field(default=1.0, ge=0, le=3)
+    min_confidence: float = Field(default=0.5, ge=0, le=1)
+    always_confirm_domains: list[str] = ["medical"]
+
+    @field_validator("always_confirm_domains")
+    @classmethod
+    def _known_domains(cls, value: list[str]) -> list[str]:
+        unknown = [item for item in value if item not in DOMAINS]
+        if unknown:
+            raise ValueError(f"unknown domain(s) {unknown}; valid: {list(DOMAINS)}")
+        return value
+
+
+class DecisionsConfig(_Section):
     backends: list[str] = ["jev", "local", "rules"]
-    budget_ms: int = 4000
-    cache_ttl_s: float = 300.0
-    cache_max_entries: int = 512
+    budget_ms: int = Field(default=6000, ge=0)
+    cache_ttl_s: float = Field(default=300.0, ge=0)
+    cache_max_entries: int = Field(default=512, ge=1)
     jev: JevConfig = Field(default_factory=JevConfig)
     local: LocalDecisionConfig = Field(default_factory=LocalDecisionConfig)
     logit: LogitDecisionConfig = Field(default_factory=LogitDecisionConfig)
     rules: RulesConfig = Field(default_factory=RulesConfig)
+    fast_path: FastPathConfig = Field(default_factory=FastPathConfig)
+
+    @field_validator("backends")
+    @classmethod
+    def _known_backends(cls, value: list[str]) -> list[str]:
+        unknown = [item for item in value if item not in KNOWN_BACKENDS]
+        if unknown:
+            raise ValueError(f"unknown decision backend(s) {unknown}; valid: {list(KNOWN_BACKENDS)}")
+        if len(set(value)) != len(value):
+            raise ValueError("a decision backend is listed twice")
+        return value
 
 
-class PrivacyConfig(BaseModel):
+class PrivacyConfig(_Section):
     redact: bool = True
-    max_state_chars: int = 1500
-    store_previews: bool = True
-    preview_chars: int = 80
+    max_state_chars: int = Field(default=1500, ge=0)
+    store_previews: bool = False
+    preview_chars: int = Field(default=80, ge=0, le=MAX_PREVIEW_CHARS)
     allow_cloud: bool = True
 
 
-class ObservabilityConfig(BaseModel):
+class ObservabilityConfig(_Section):
     db_path: Path = Path("data/switchboard.sqlite3")
-    retention_days: int = 30
+    retention_days: int = Field(default=30, ge=1)
 
 
 class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     server: ServerConfig = Field(default_factory=ServerConfig)
     upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
     stack: StackConfig = Field(default_factory=StackConfig)
@@ -176,36 +231,65 @@ def load_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def _coerce(current: Any, raw: str) -> Any:
-    """Coerce an environment string to the shape of the value it replaces."""
-    if isinstance(current, bool):
-        return raw.strip().lower() in {"1", "true", "yes", "on"}
-    if isinstance(current, int) and not isinstance(current, bool):
-        return int(raw)
-    if isinstance(current, float):
-        return float(raw)
-    if isinstance(current, list):
-        return [item.strip() for item in raw.split(",") if item.strip()]
-    return raw
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off"}
+
+
+def _coerce(reference: Any, raw: str, name: str) -> Any:
+    """Coerce an environment string to the type of the setting it overrides.
+
+    The reference is the setting's default, so the type comes from the schema
+    rather than from whatever the TOML happened to contain. A boolean that is
+    neither clearly true nor clearly false is an error, not a silent False.
+    """
+    text = raw.strip()
+    if isinstance(reference, bool):
+        lowered = text.lower()
+        if lowered in _TRUE:
+            return True
+        if lowered in _FALSE:
+            return False
+        raise ValueError(f"{name}={raw!r} is not a boolean (use true/false)")
+    if isinstance(reference, int):
+        return int(text)
+    if isinstance(reference, float):
+        return float(text)
+    if isinstance(reference, list):
+        return [item.strip() for item in text.split(",") if item.strip()]
+    # Strings, paths, literals and "auto"-or-bool unions: pydantic validates them.
+    return text
 
 
 def _apply_env_overrides(data: dict[str, Any], environ: dict[str, str]) -> list[str]:
-    """Apply SWITCHBOARD_SECTION__KEY overrides in place; return the keys applied."""
+    """Apply SWITCHBOARD_SECTION__KEY overrides in place; return the keys applied.
+
+    Paths are resolved against the schema, not against the TOML, so an override
+    works even for a table the file omits. An override naming a setting that
+    does not exist is an error: a typo in an environment variable should be as
+    loud as a typo in the file.
+    """
+    reference_root = Config().model_dump(mode="python")
     applied: list[str] = []
     for key, raw in environ.items():
         if not key.startswith(ENV_PREFIX):
             continue
         path = key[len(ENV_PREFIX) :].lower().split("__")
-        target: Any = data
+        reference: Any = reference_root
+        for part in path:
+            if not isinstance(reference, dict) or part not in reference:
+                raise ValueError(f"{key} does not name a Switchboard setting")
+            reference = reference[part]
+        if isinstance(reference, dict):
+            raise ValueError(f"{key} names a table, not a setting")
+
+        target = data
         for part in path[:-1]:
-            if not isinstance(target, dict) or part not in target:
-                target = None
-                break
-            target = target[part]
-        if not isinstance(target, dict):
-            continue
-        leaf = path[-1]
-        target[leaf] = _coerce(target.get(leaf), raw)
+            existing = target.get(part)
+            if not isinstance(existing, dict):
+                existing = {}
+                target[part] = existing
+            target = existing
+        target[path[-1]] = _coerce(reference, raw, key)
         applied.append(key)
     return applied
 

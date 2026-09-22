@@ -23,16 +23,29 @@ if (Test-Path $configPath) {
 
 $stopped = $false
 
+function Test-IsSwitchboard([int]$ProcessId) {
+    $info = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    return ($info -and $info.CommandLine -match 'switchboard')
+}
+
 # The pid file first: it names the process we started, not whoever holds the port.
+# It holds "PID|start-ticks"; both must match, because Windows reuses PIDs and a
+# stale file could otherwise name - and this script would kill - an unrelated
+# process tree.
 if (Test-Path $PidFile) {
     $recorded = (Get-Content $PidFile -Raw).Trim()
-    if ($recorded -match '^\d+$') {
-        $process = Get-Process -Id ([int]$recorded) -ErrorAction SilentlyContinue
-        if ($process) {
+    if ($recorded -match '^(\d+)\|(\d+)$') {
+        $recordedPid = [int]$Matches[1]
+        $recordedTicks = [long]$Matches[2]
+        $process = Get-Process -Id $recordedPid -ErrorAction SilentlyContinue
+        $sameProcess = $process -and ($process.StartTime.ToUniversalTime().Ticks -eq $recordedTicks)
+        if ($sameProcess -and (Test-IsSwitchboard $recordedPid)) {
             # Kill the tree: `uv run` launches python as a child.
-            & taskkill /PID $recorded /T /F 2>&1 | Out-Null
-            Write-Host "[OK] Stopped Switchboard (PID $recorded)" -ForegroundColor Green
+            & taskkill /PID $recordedPid /T /F 2>&1 | Out-Null
+            Write-Host "[OK] Stopped Switchboard (PID $recordedPid)" -ForegroundColor Green
             $stopped = $true
+        } elseif ($process) {
+            Write-Host "[!] PID $recordedPid now belongs to another process; left it alone." -ForegroundColor Yellow
         }
     }
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
@@ -43,8 +56,7 @@ if (-not $stopped) {
     if ($connection -and $connection.OwningProcess -ne 4) {
         $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
         # Only stop it if it really is ours.
-        $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue).CommandLine
-        if ($commandLine -match 'switchboard') {
+        if (Test-IsSwitchboard $connection.OwningProcess) {
             & taskkill /PID $connection.OwningProcess /T /F 2>&1 | Out-Null
             Write-Host "[OK] Stopped Switchboard on port $port (PID $($connection.OwningProcess))" -ForegroundColor Green
             $stopped = $true

@@ -30,6 +30,7 @@ from switchboard.decisions.factory import build_chain
 from switchboard.executor import build_executor
 from switchboard.proxy import build_proxy_router
 from switchboard.router import Router
+from switchboard.security import LocalBoundary
 from switchboard.store import Store
 from switchboard.upstream import LlamaClient
 
@@ -136,6 +137,12 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     if mcp is not None:
         app.mount("/mcp", mcp.streamable_http_app())
+
+    # Outermost, so it sees every request first - including /mcp. A web page the
+    # user happens to have open must not be able to spend GPU time or trigger a
+    # model restart through the browser, and no request body is allowed to grow
+    # without bound. Native clients (cptr, SDKs, curl) send no Origin at all.
+    app.add_middleware(LocalBoundary, port=config.server.port, host=config.server.host)
     return app
 
 

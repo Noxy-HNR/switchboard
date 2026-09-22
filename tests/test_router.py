@@ -101,6 +101,9 @@ async def test_the_resident_model_comes_from_llama_server(config: Config) -> Non
 
 
 async def test_a_route_is_recorded_without_the_prompt(config: Config) -> None:
+    # Previews are off by default; turn them on to prove that even when a
+    # preview is kept, the secret inside it is not.
+    config.privacy.store_previews = True
     llama = FakeLlama()
     router = build_router(config, llama)
     try:

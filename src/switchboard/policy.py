@@ -336,10 +336,12 @@ class RoutingPolicy:
                     f"(~{self.switch_seconds(model):.0f}s) instead of routing automatically."
                 )
             else:
+                # The proxy refuses such a request rather than let another model
+                # answer it, so the sentence must not claim a fallback happened.
                 reason = (
                     f"{model.id} was named by the request but cannot be loaded "
-                    f"({executor_reason or 'switching unavailable'}); "
-                    f"answering on {resident.id if resident else 'the resident model'}."
+                    f"({executor_reason or 'switching unavailable'}); an explicit "
+                    "choice is not substituted with another model."
                 )
             return RouteDecision(
                 selected=model if (not switch_required or allowed) else resident,

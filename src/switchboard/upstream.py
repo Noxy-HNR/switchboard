@@ -192,6 +192,32 @@ class LlamaClient:
                 return True
         return False
 
+    async def resident_model_id(self) -> str | None:
+        """What llama-server has loaded right now, in one request, uncached.
+
+        The full `status()` makes four calls. The check a request makes just
+        before generating only needs this one, and it runs on every request.
+        """
+        try:
+            response = await self._client.get("/v1/models", timeout=self._short_timeout())
+        except httpx.HTTPError:
+            return None
+        if response.status_code != 200:
+            return None
+        try:
+            entries = response.json().get("data") or []
+        except (ValueError, AttributeError):
+            return None
+        if any(isinstance(entry.get("status"), dict) for entry in entries):
+            loaded = [
+                str(entry.get("id"))
+                for entry in entries
+                if isinstance(entry.get("status"), dict) and entry["status"].get("value") == "loaded"
+            ]
+            return loaded[0] if loaded else None
+        ids = [str(entry.get("id")) for entry in entries if entry.get("id")]
+        return ids[0] if ids else None
+
     async def wait_until_healthy(
         self, *, timeout_s: float, poll_s: float = 1.0, expect_model: str | None = None
     ) -> UpstreamStatus:

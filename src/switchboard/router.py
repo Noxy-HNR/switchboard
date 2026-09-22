@@ -48,6 +48,7 @@ logger = logging.getLogger("switchboard.router")
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
 Source = Literal["proxy", "api", "mcp", "cli", "shadow"]
 
 
@@ -109,7 +110,7 @@ class StepEvaluation:
 
 
 def recommend_next(
-context: StepContext, decision: StepDecision
+    context: StepContext, decision: StepDecision
 ) -> tuple[Recommendation, str, bool]:
     """Turn judgments plus hard facts into one recommendation.
 
@@ -273,6 +274,16 @@ class Router:
         resident = snapshot.resolve(status.model_path or status.model_id) if status.healthy else None
         return status, resident
 
+    async def resident_now(self) -> tuple[str | None, ModelEntry | None]:
+        """The model loaded at this instant, read fresh with a single request.
+
+        Used under the in-flight reservation just before generating, where the
+        cached status could be two seconds stale and a full refresh would add
+        three calls nobody needs.
+        """
+        model_id = await self._upstream.resident_model_id()
+        return model_id, self.registry().resolve(model_id) if model_id else None
+
     def backend_facts(self, status: UpstreamStatus, resident: ModelEntry | None) -> BackendFacts:
         return BackendFacts(
             resident_model_id=resident.id if resident else status.model_id,
@@ -376,8 +387,12 @@ class Router:
         status, resident = await self.facts()
         facts = self.backend_facts(status, resident)
 
-        chain_result = await self._chain.decide_task(context, facts, use_cache=use_cache)
+        if explicit_model is not None or self._config.routing.mode == "off":
+            chain_result = DecisionResult(decision=TaskDecision(backend="bypass"))
+        else:
+            chain_result = await self._chain.decide_task(context, facts, use_cache=use_cache)
         decision: TaskDecision = chain_result.decision
+        resident_before = resident.id if resident else status.model_id
 
         executor_available, executor_reason = await self._executor.available()
         if not allow_switch:
@@ -424,16 +439,17 @@ class Router:
             switch=switch,
             source=source,
             streaming=streaming,
-            resident_before=resident.id if resident else status.model_id,
+            resident_before=resident_before,
             requested_model=requested_model,
         )
 
-        self._persist_session(
-            context.session_id,
-            route.selected.id if route.selected else None,
-            decision,
-            switched=bool(switch and switch.ok),
-        )
+        if allow_switch:
+            self._persist_session(
+                context.session_id,
+                route.selected.id if route.selected else None,
+                decision,
+                switched=bool(switch and switch.ok),
+            )
 
         return RoutedPlan(
             model=route.selected,
@@ -448,10 +464,33 @@ class Router:
     async def _perform_switch(
         self, target: ModelEntry, resident: ModelEntry | None
     ) -> SwitchResult:
-        """Run one switch at a time, and never while we are streaming."""
+        """An automatic switch, decided by the policy."""
+        return await self._guarded_switch(target, trigger="auto")
+
+    async def switch_to(self, target: ModelEntry, *, trigger: str = "manual") -> SwitchResult:
+        """An explicit switch, from the CLI or the agent API."""
+        return await self._guarded_switch(target, trigger=trigger)
+
+    async def _guarded_switch(self, target: ModelEntry, *, trigger: str) -> SwitchResult:
+        """The one path to a restart, with every guard, under the lock.
+
+        Automatic and explicit switches share it deliberately: they used to have
+        separate copies of these checks, and the copies had already drifted.
+        """
         async with self._switch_lock:
             # Re-check under the lock: another request may have just loaded it.
             status, current = await self.facts(force=True)
+            from_model = current.id if current else None
+
+            def refused(reason: str) -> SwitchResult:
+                return SwitchResult(
+                    ok=False,
+                    executor=self._executor.name,
+                    from_model=from_model,
+                    to_model=target.id,
+                    error=reason,
+                )
+
             if current and current.id == target.id:
                 return SwitchResult(
                     ok=True,
@@ -460,40 +499,47 @@ class Router:
                     to_model=target.id,
                     noop=True,
                 )
+            if not target.enabled or not target.exists:
+                return refused(f"{target.id} is disabled or its file is missing")
             if self._inflight > 0:
-                return SwitchResult(
-                    ok=False,
-                    executor=self._executor.name,
-                    from_model=current.id if current else None,
-                    to_model=target.id,
-                    error=f"{self._inflight} request(s) in flight through Switchboard",
-                )
+                return refused(f"{self._inflight} request(s) in flight through Switchboard")
+            # A healthy server whose slot state is unknown is treated as busy: a
+            # restart drops whatever it is doing, and "unknown" is not "idle".
+            # A server that is down has nothing to drop, so a load may proceed.
+            if status.healthy and status.busy is not False:
+                return refused("llama-server is busy or its slot state is unknown")
 
-            result = await self._executor.switch(
-                target, from_model=current.id if current else None
-            )
-            self._record_switch(result, trigger="auto")
-            if result.ok and result.load_ms:
-                self._record_measurement(
-                    target.id, "load_s", result.load_ms / 1000.0, source="switch"
-                )
-                self.invalidate_registry()
-            return result
-
-    async def switch_to(self, target: ModelEntry, *, trigger: str = "manual") -> SwitchResult:
-        """Explicit switch, used by the CLI and the agent API."""
-        async with self._switch_lock:
-            _, current = await self.facts(force=True)
-            result = await self._executor.switch(
-                target, from_model=current.id if current else None
-            )
+            result = await self._run_to_completion(target, from_model, trigger=trigger)
             self._record_switch(result, trigger=trigger)
             if result.ok and result.load_ms:
+                source = "switch" if trigger == "auto" else f"switch:{trigger}"
                 self._record_measurement(
-                    target.id, "load_s", result.load_ms / 1000.0, source=f"switch:{trigger}"
+                    target.id, "load_s", result.load_ms / 1000.0, source=source
                 )
                 self.invalidate_registry()
             return result
+
+    async def _run_to_completion(
+        self, target: ModelEntry, from_model: str | None, *, trigger: str
+    ) -> SwitchResult:
+        """Run the executor, holding the lock until the restart really ends.
+
+        The executor asks the dashboard to restart llama-server, which carries on
+        whether or not our caller is still waiting. If the caller is cancelled
+        (a client disconnects mid-load) and the lock were released at once, the
+        next request would start generating against a server that is still
+        coming up with a different model. So the external action is shielded,
+        the lock stays held until it finishes, and only then is the cancellation
+        passed on.
+        """
+        task = asyncio.ensure_future(self._executor.switch(target, from_model=from_model))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                # The switch happened even though nobody is waiting for it.
+                self._record_switch(await task, trigger=trigger)
+            raise
 
     # --- step supervision -----------------------------------------------
 
@@ -543,7 +589,10 @@ class Router:
     @contextlib.asynccontextmanager
     async def inflight(self):
         """Count a request as in flight so a switch cannot interrupt it."""
-        self._inflight += 1
+        # A generation cannot begin during a restart. Switches inspect the count
+        # under this same lock, including the explicit agent switch endpoint.
+        async with self._switch_lock:
+            self._inflight += 1
         try:
             yield
         finally:
