@@ -296,3 +296,48 @@ async def test_a_replaced_chain_is_closed_later_not_at_once(config: Config) -> N
         assert Tracked.closed is False, "a decision may still be running on the old chain"
         await harness.router.aclose_retired()
         assert Tracked.closed is True
+
+
+# --- models, usage and history ----------------------------------------------------
+
+
+async def test_models_are_listed_and_exclusions_apply_live(settings_harness: Harness, project: Path) -> None:
+    row = setting((await settings_harness.client.get("/settings")).json(), "routing.auto_exclude")
+    assert {"fast-9b", "deep-27b", "med-27b"} <= set(row["choices"])
+    assert "GB" in row["choice_details"]["deep-27b"]
+
+    response = await settings_harness.client.put(
+        "/settings", json={"values": {"routing.auto_exclude": ["deep-27b", "deep-27b", " "]}}
+    )
+
+    assert response.status_code == 200
+    assert settings_harness.router.config.routing.auto_exclude == ["deep-27b"]
+    assert local_toml(project) == {"routing": {"auto_exclude": ["deep-27b"]}}
+
+
+async def test_the_key_row_reports_the_last_days_jev_usage(settings_harness: Harness) -> None:
+    """Only calls that went out count: skips (no key yet, breaker open) never reached TypeSafe."""
+    settings_harness.router.store.provider_stats = lambda hours=24: {  # type: ignore[method-assign]
+        "jev": {
+            "attempts": 15,
+            "ok": 2,
+            "error_kinds": {"unconfigured": 11, "breaker": 1, "auth": 1},
+            "est_cost_usd": 0.00004,
+        }
+    }
+
+    key = (await settings_harness.client.get("/settings")).json()["keys"][0]
+
+    assert key["usage_24h"] == {"calls": 3, "answered": 2, "failures": {"auth": 1}, "est_cost_usd": 0.00004}
+
+
+async def test_history_is_pruned_with_the_retention_the_settings_say(settings_harness: Harness) -> None:
+    from switchboard.app import prune_history
+
+    seen: list[int] = []
+    settings_harness.router.store.prune = lambda days: seen.append(days) or {"routes": 0}  # type: ignore[method-assign]
+
+    await settings_harness.client.put("/settings", json={"values": {"observability.retention_days": 7}})
+    prune_history(settings_harness.router)
+
+    assert seen == [7]

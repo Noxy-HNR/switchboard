@@ -151,6 +151,12 @@ code, not by convention:
   answers with an error, the database records the status or the exception
   type - never the body, which can echo the request back.
 
+**History is not kept forever.** Routing rows, decision attempts, switches,
+step checks and idle sessions older than `observability.retention_days` (30 by
+default; Settings > Data) are deleted automatically once a day, and once a
+minute after start-up. Speed and load-time measurements are kept, since they
+contain no request content and routing depends on them.
+
 To keep a short redacted excerpt for debugging:
 
 ```toml

@@ -48,7 +48,7 @@ from switchboard.config import (
 from switchboard.decisions.base import BackendError, BackendFacts, TaskContext
 from switchboard.decisions.factory import build_chain
 
-Kind = Literal["choice", "bool", "int", "float", "text", "backends", "tristate"]
+Kind = Literal["choice", "bool", "int", "float", "text", "backends", "tristate", "models"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +68,7 @@ SETTINGS: tuple[Setting, ...] = (
     # --- routing
     Setting(
         "routing.mode", "Routing", "Mode",
-        "active: switchboard-auto may load a better model through the C:\\AI dashboard. "
+        "active: switchboard-auto may load a better model through the stack dashboard. "
         "shadow: never switches, and records what it would have done. "
         "off: plain pass-through to whatever is loaded.",
         "choice", ("active", "shadow", "off"),
@@ -83,6 +83,14 @@ SETTINGS: tuple[Setting, ...] = (
         "routing.allow_explicit_switch", "Routing", "Load a model a request names",
         "When a request names a real model that is not loaded, load it. Off: refuse instead.",
         "bool",
+    ),
+    # --- models
+    Setting(
+        "routing.auto_exclude", "Models", "Switch to on its own",
+        "Ticked models may be loaded automatically when a request needs them. An unticked "
+        "model can still be requested by name or loaded from the Models tab, and keeps "
+        "serving if it is already loaded.",
+        "models",
     ),
     # --- guards
     Setting(
@@ -144,19 +152,9 @@ SETTINGS: tuple[Setting, ...] = (
         "backends",
     ),
     Setting(
-        "decisions.jev.enabled", "Decisions", "Jev (cloud)",
-        "auto: on when a TypeSafe key is saved. on/off force it.",
-        "tristate", ("auto", "on", "off"),
-    ),
-    Setting(
-        "decisions.jev.model", "Decisions", "Jev model",
-        "jev-latest follows TypeSafe's current model; pin a version such as jev-1.13.0 to hold it.",
-        "text",
-    ),
-    Setting(
         "decisions.logit.enabled", "Decisions", "Logit backend (experimental)",
         "First-token probabilities from the loaded model. Its numbers are not calibrated; it "
-        "only runs if it is also listed among the backends.",
+        "only runs if it is also ticked among the backends.",
         "bool",
     ),
     Setting(
@@ -165,14 +163,54 @@ SETTINGS: tuple[Setting, ...] = (
         "bool",
     ),
     Setting(
+        "decisions.fast_path.max_difficulty", "Decisions", "Fast path: easiest difficulty",
+        "Only requests the rules rate at or below this difficulty (0 trivial to 3 hard) skip the models.",
+        "float",
+    ),
+    Setting(
+        "decisions.fast_path.min_confidence", "Decisions", "Fast path: confidence needed",
+        "How sure the rules must be about the request's domain (0 to 1) to skip the models.",
+        "float",
+    ),
+    Setting(
         "decisions.budget_ms", "Decisions", "Decision budget",
         "Total time the semantic layer may take per request before the rules answer.",
         "int", unit="ms",
     ),
     Setting(
+        "decisions.cache_ttl_s", "Decisions", "Reuse a decision for",
+        "An identical request within this window reuses the previous decision instead of asking again.",
+        "float", unit="s",
+    ),
+    Setting(
+        "decisions.local.timeout_s", "Decisions", "Local backend timeout",
+        "How long one decision on the loaded model may take.", "float", unit="s",
+    ),
+    Setting(
         "decisions.local.min_resident_gen_tps", "Decisions", "Local backend speed floor",
         "Skip the local backend when the loaded model generates slower than this.",
         "float", unit="tok/s",
+    ),
+    # --- jev
+    Setting(
+        "decisions.jev.enabled", "Jev (cloud)", "Use Jev",
+        "auto: on whenever a TypeSafe key is saved and cloud decisions are allowed. on/off force it.",
+        "tristate", ("auto", "on", "off"),
+    ),
+    Setting(
+        "decisions.jev.model", "Jev (cloud)", "Model",
+        "jev-latest follows TypeSafe's current model; pin a version such as jev-1.13.0 to hold it.",
+        "text",
+    ),
+    Setting(
+        "decisions.jev.timeout_s", "Jev (cloud)", "Timeout",
+        "How long one Jev call may take before the local backend is asked instead.",
+        "float", unit="s",
+    ),
+    Setting(
+        "decisions.jev.max_retries", "Jev (cloud)", "Retries",
+        "How many times a failed call (a timeout, a 5xx) is retried. Each retry resends the same state.",
+        "int",
     ),
     # --- privacy
     Setting(
@@ -194,6 +232,14 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         "privacy.preview_chars", "Privacy", "Preview length",
         "Length of a stored preview (at most 200).", "int", unit="chars",
+    ),
+    # --- data
+    Setting(
+        "observability.retention_days", "Data", "Keep history for",
+        "Routing history, decision attempts, switches, step checks and idle sessions older "
+        "than this are deleted automatically once a day. Speed and load-time measurements "
+        "are always kept.",
+        "int", unit="days",
     ),
 )
 
@@ -223,6 +269,9 @@ KEYS: tuple[KeySpec, ...] = (
 )
 
 _KEYS_BY_ID = {spec.id: spec for spec in KEYS}
+
+# Attempt outcomes that never sent anything to the provider.
+_NOT_SENT = ("unconfigured", "unavailable", "skipped", "breaker", "budget")
 _KEY_MIN_CHARS = 8
 _KEY_MAX_CHARS = 512
 _KEY_FORBIDDEN = set("\"'`\\")
@@ -307,7 +356,14 @@ def _file_value(config_path: Path, path: str) -> Any:
     return _get(Config().model_dump(mode="json"), path)
 
 
-def describe_settings(config: Config, environ: dict[str, str]) -> list[dict[str, Any]]:
+def describe_settings(
+    config: Config, environ: dict[str, str], models: list[dict[str, str]] | None = None
+) -> list[dict[str, Any]]:
+    """Every setting, with its value, where it comes from, and its choices.
+
+    `models` lists the models the registry knows ({"id", "detail"}), which are
+    the choices for the per-model automatic-switching setting.
+    """
     current = config.model_dump(mode="json")
     saved = read_toml(local_settings_path(config.config_path))
     env = _environment(config.config_path, environ)
@@ -321,7 +377,16 @@ def describe_settings(config: Config, environ: dict[str, str]) -> list[dict[str,
                 "label": setting.label,
                 "help": setting.help,
                 "kind": setting.kind,
-                "choices": list(setting.choices),
+                "choices": (
+                    [model["id"] for model in models or []]
+                    if setting.kind == "models"
+                    else list(setting.choices)
+                ),
+                "choice_details": (
+                    {model["id"]: model["detail"] for model in models or []}
+                    if setting.kind == "models"
+                    else {}
+                ),
                 "unit": setting.unit,
                 "value": _get(current, setting.path),
                 "file_value": _file_value(config.config_path, setting.path),
@@ -332,7 +397,10 @@ def describe_settings(config: Config, environ: dict[str, str]) -> list[dict[str,
     return rows
 
 
-def describe_keys(config: Config, environ: dict[str, str]) -> list[dict[str, Any]]:
+def describe_keys(
+    config: Config, environ: dict[str, str], usage: dict[str, dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Every key's status - never its value - plus what it was used for in the last day."""
     stored = load_dotenv(dotenv_path(config.config_path))
     rows = []
     for spec in KEYS:
@@ -351,6 +419,7 @@ def describe_keys(config: Config, environ: dict[str, str]) -> list[dict[str, Any
                 # Enough to tell two keys apart, not enough to use one.
                 "hint": f"…{value[-4:]}" if len(value) >= 12 else None,
                 "pinned": bool(from_process),
+                "usage_24h": (usage or {}).get(spec.id),
             }
         )
     return rows
@@ -374,6 +443,10 @@ def _normalise(setting: Setting, value: Any) -> Any:
         # Canonical order, with the floor always last.
         chosen = [name for name in KNOWN_BACKENDS if name in value and name != "rules"]
         return [*chosen, "rules"]
+    if setting.kind == "models":
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise SettingsError(422, f"{setting.path} must be a list of model ids")
+        return list(dict.fromkeys(item.strip() for item in value if item.strip()))
     if setting.kind == "float" and isinstance(value, (int, float)) and not isinstance(value, bool):
         if not math.isfinite(float(value)):
             raise SettingsError(422, f"{setting.path} must be a finite number")
@@ -622,11 +695,34 @@ class _KeyUpdate(BaseModel):
 def build_settings_router(get_router: Callable[[Request], Any]) -> APIRouter:
     api = APIRouter()
 
-    def payload(config: Config) -> dict[str, Any]:
+    def payload(request: Request, config: Config) -> dict[str, Any]:
         environ = dict(os.environ)
+        router = get_router(request)
+        models = [
+            {"id": model.id, "detail": f"{model.size_gb:.1f} GB, {model.role}"}
+            for model in router.registry().models
+            if model.exists
+        ]
+        usage: dict[str, dict[str, Any]] = {}
+        if router.store is not None:
+            try:
+                jev = router.store.provider_stats(hours=24).get("jev")
+            except Exception:  # noqa: BLE001 - usage is a courtesy; settings must still load
+                jev = None
+            if jev:
+                kinds: dict[str, int] = dict(jev.get("error_kinds") or {})
+                # Skips never reached TypeSafe (no key yet, breaker open, budget
+                # spent, a step judged locally); only real calls are counted.
+                sent = jev.get("attempts", 0) - sum(kinds.pop(kind, 0) for kind in _NOT_SENT)
+                usage["typesafe"] = {
+                    "calls": max(0, sent),
+                    "answered": jev.get("ok", 0),
+                    "failures": kinds,
+                    "est_cost_usd": jev.get("est_cost_usd", 0.0),
+                }
         return {
-            "settings": describe_settings(config, environ),
-            "keys": describe_keys(config, environ),
+            "settings": describe_settings(config, environ, models),
+            "keys": describe_keys(config, environ, usage),
             "storage": {
                 "settings_file": str(local_settings_path(config.config_path)),
                 "keys_file": str(dotenv_path(config.config_path)),
@@ -638,14 +734,14 @@ def build_settings_router(get_router: Callable[[Request], Any]) -> APIRouter:
         factory = getattr(request.app.state, "chain_factory", None) or build_chain
         router.reconfigure(updated, factory(updated, router.upstream))
         request.app.state.config = updated
-        return payload(updated)
+        return payload(request, updated)
 
     def fail(error: SettingsError) -> HTTPException:
         return HTTPException(status_code=error.status, detail=str(error))
 
     @api.get("/settings", summary="Settings and keys the dashboard can change")
     async def get_settings(request: Request) -> dict[str, Any]:
-        return payload(get_router(request).config)
+        return payload(request, get_router(request).config)
 
     @api.put("/settings", summary="Save settings; they apply without a restart")
     async def put_settings(request: Request, update: _SettingsUpdate) -> dict[str, Any]:

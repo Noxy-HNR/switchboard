@@ -286,6 +286,13 @@ class RoutingPolicy:
         resident: ModelEntry | None,
         candidate: Candidate,
     ) -> None:
+        # Turned off for automatic switching in Settings. The loaded model still
+        # serves - excluding it only stops Switchboard from loading it on its own.
+        if model.id in self._config.routing.auto_exclude and not candidate.resident:
+            candidate.feasible = False
+            candidate.infeasible_reason = "automatic switching to it is turned off in Settings"
+            return
+
         # The same floored difficulty scoring uses, so a model is never judged
         # to fit an answer shorter than the one the policy then plans for.
         required = request.estimated_prompt_tokens + self.expected_output_tokens(

@@ -118,8 +118,12 @@ under **Settings**.) Everything there applies at once, without a restart:
 * **API keys** - paste a key, save, then **Test** it. Keys are written to
   `.env` in this folder and never shown again; the page only says whether one
   is set and its last four characters.
-* **Routing, switch guards, policy, decisions, privacy** - the settings worth
-  changing day to day. They are saved to `config/local.toml`, layered over
+* **Settings** in groups: Routing, Models (which models Switchboard may
+  switch to on its own), Switch guards (including the lecture-recording
+  guard), Policy, Decisions (backends, fast path, cache, timeouts), Jev (cloud),
+  Privacy, and Data (how long routing history is kept; older rows are pruned
+  daily). The key row also shows the last day's Jev calls and estimated cost.
+  They are saved to `config/local.toml`, layered over
   `config/switchboard.toml`; **Reset** next to a setting (or deleting
   `local.toml`) goes back to the file's value.
 

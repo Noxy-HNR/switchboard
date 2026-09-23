@@ -88,6 +88,9 @@ class RoutingConfig(_Section):
     mode: Literal["active", "shadow", "off"] = "active"
     allow_explicit_switch: bool = True
     default_policy: Literal["auto", "fast", "deep", "medical"] = "auto"
+    # Model ids Switchboard never switches to on its own. A request can still
+    # name one, and it can still be loaded by hand.
+    auto_exclude: list[str] = []
     guards: GuardConfig = Field(default_factory=GuardConfig)
 
 

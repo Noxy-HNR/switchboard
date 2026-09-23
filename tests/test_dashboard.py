@@ -156,3 +156,9 @@ def test_the_embedded_view_is_settings_only_and_polls_nothing(page: str) -> None
 def test_destructive_buttons_do_not_rely_on_confirm_dialogs(page: str) -> None:
     """A frame from another origin may have confirm() refused; Remove and Reset ask twice instead."""
     assert "secondClick(remove" in page and "secondClick(reset" in page
+
+
+def test_setting_groups_flow_in_columns_without_row_gaps(page: str) -> None:
+    """A two-column grid left a gap under every short group; columns stack them."""
+    assert "#settings-groups { columns:" in page
+    assert "break-inside: avoid" in page

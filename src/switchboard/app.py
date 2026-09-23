@@ -16,6 +16,8 @@ whether or not the stack is running.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,6 +41,11 @@ from switchboard.upstream import LlamaClient
 logger = logging.getLogger("switchboard")
 
 DASHBOARD_FILE = Path(__file__).resolve().parent / "static" / "dashboard.html"
+
+# History older than observability.retention_days is dropped this often, and
+# once shortly after start-up.
+PRUNE_EVERY_S = 24 * 3600
+PRUNE_FIRST_AFTER_S = 60.0
 
 
 def get_router(request: Request) -> Router:
@@ -82,6 +89,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             config.routing.mode,
             config.upstream.base_url,
         )
+        pruning = asyncio.create_task(_prune_periodically(router))
         try:
             if mcp is not None:
                 # A mounted sub-application does not get its own lifespan, so the
@@ -91,6 +99,9 @@ def create_app(config: Config | None = None) -> FastAPI:
             else:
                 yield
         finally:
+            pruning.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pruning
             # The dashboard may have swapped the chain since start-up.
             await router.aclose_retired()
             await router.chain.aclose()
@@ -156,6 +167,28 @@ def create_app(config: Config | None = None) -> FastAPI:
     # without bound. Native clients (cptr, SDKs, curl) send no Origin at all.
     app.add_middleware(LocalBoundary, port=config.server.port, host=config.server.host)
     return app
+
+
+def prune_history(router: Router) -> dict[str, int] | None:
+    """Drop history older than the retention window the settings currently say."""
+    store = router.store
+    if store is None:
+        return None
+    days = router.config.observability.retention_days
+    deleted = store.prune(days)
+    if any(deleted.values()):
+        logger.info("pruned history older than %d days: %s", days, deleted)
+    return deleted
+
+
+async def _prune_periodically(router: Router) -> None:
+    await asyncio.sleep(PRUNE_FIRST_AFTER_S)
+    while True:
+        try:
+            prune_history(router)
+        except Exception as error:  # noqa: BLE001 - housekeeping must never stop the service
+            logger.warning("could not prune history: %s", type(error).__name__)
+        await asyncio.sleep(PRUNE_EVERY_S)
 
 
 def frame_ancestors(config: Config) -> str:

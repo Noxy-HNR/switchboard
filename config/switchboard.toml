@@ -39,6 +39,10 @@ mode = "active"
 allow_explicit_switch = true
 # Requests that name no known model fall back to this policy.
 default_policy = "auto"
+# Model ids Switchboard never switches to on its own (the dashboard's Settings >
+# Models ticks). A request can still name one, it can still be loaded by hand,
+# and it keeps serving if it is already loaded.
+auto_exclude = []
 
 [routing.guards]
 # A switch must beat staying put by this much expected utility (in seconds) ...

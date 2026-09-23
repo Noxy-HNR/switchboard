@@ -434,8 +434,11 @@
   }
   .settings-intro code { font-family: var(--mono); color: var(--fg); }
 
-  .settings-grid { display: grid; gap: 14px; grid-template-columns: 1fr; align-items: start; }
-  @media (min-width: 1100px) { .settings-grid { grid-template-columns: 1fr 1fr; } }
+  /* Setting groups flow in balanced columns, each directly under the one above
+     it. A grid put them in rows as tall as the taller of each pair, which left
+     a gap under every short group. */
+  #settings-groups { columns: 2 460px; column-gap: 14px; }
+  #settings-groups > section { break-inside: avoid; margin-bottom: 14px; }
 
   .setting-row {
     display: grid;
@@ -525,7 +528,7 @@
     <h2>API keys <span class="hint">stored in .env, never sent back to this page</span></h2>
     <div id="keys-body"></div>
   </section>
-  <div id="settings-groups" class="settings-grid" style="margin-top: 14px;"></div>
+  <div id="settings-groups" style="margin-top: 14px;"></div>
   <div class="settings-bar" style="margin-top: 14px; border: 1px solid var(--line); border-radius: 4px;">
     <button id="settings-save" class="primary" type="button" disabled>Save changes</button>
     <button id="settings-discard" type="button" disabled>Discard</button>
@@ -1389,9 +1392,41 @@
     return BACKEND_NAMES.filter(function (name) { return name === "rules" || list.indexOf(name) !== -1; });
   }
 
+  // The per-model setting stores the models switching is turned OFF for, so a
+  // model added later is allowed by default; a ticked box means "allowed".
+  function excludedIn(row) {
+    var known = row.choices.filter(function (id) { return row.value.indexOf(id) !== -1; });
+    var gone = row.value.filter(function (id) { return row.choices.indexOf(id) === -1; });
+    return known.concat(gone);
+  }
+
   function controlFor(row) {
     var pinned = Boolean(row.pinned_by);
     var node;
+    if (row.kind === "models") {
+      node = el("span", "setting-control");
+      var ticks = {};
+      row.choices.forEach(function (id) {
+        var label = el("label", "check");
+        var box = el("input");
+        box.type = "checkbox";
+        box.checked = row.value.indexOf(id) === -1;
+        box.disabled = pinned;
+        box.addEventListener("change", markDirty);
+        ticks[id] = box;
+        label.appendChild(box);
+        label.appendChild(document.createTextNode(id));
+        label.title = row.choice_details[id] || "";
+        node.appendChild(label);
+      });
+      if (!row.choices.length) { node.appendChild(el("span", "unit", "no models found")); }
+      node.readValue = function () {
+        var off = row.choices.filter(function (id) { return !ticks[id].checked; });
+        // Keep exclusions for models that are not on disk right now.
+        return off.concat(row.value.filter(function (id) { return row.choices.indexOf(id) === -1; }));
+      };
+      return node;
+    }
     if (row.kind === "backends") {
       node = el("span", "setting-control");
       var boxes = {};
@@ -1447,6 +1482,7 @@
   function currentValue(row) {
     if (row.kind === "tristate") { return asTristate(row.value); }
     if (row.kind === "backends") { return withRules(row.value); }
+    if (row.kind === "models") { return excludedIn(row); }
     return row.value;
   }
 
@@ -1595,6 +1631,16 @@
     line.appendChild(el("div", "setting-help",
       "Used by " + key.used_by + ". " + key.help +
       (key.pinned ? " Set in the environment (" + key.env + "), which wins over .env; change it there." : "")));
+    var usage = key.usage_24h;
+    if (usage) {
+      var failures = Object.keys(usage.failures || {}).map(function (kind) {
+        return kind + " " + usage.failures[kind];
+      });
+      line.appendChild(el("div", "setting-help",
+        "Last 24 h: " + usage.calls + " call" + (usage.calls === 1 ? "" : "s") + " sent, " +
+        usage.answered + " answered, about $" + Number(usage.est_cost_usd || 0).toFixed(4) + "." +
+        (failures.length ? " Failed: " + failures.join(", ") + "." : "")));
+    }
     return line;
   }
 

@@ -599,3 +599,35 @@ def test_ceiling_words_always_agree_with_the_printed_numbers() -> None:
                 else "sits within"
             )
             assert words == expected, (difficulty, ceiling, words)
+
+
+# --- models turned off for automatic switching --------------------------------
+
+
+def test_a_model_turned_off_for_automatic_switching_is_never_chosen() -> None:
+    config = Config()
+    config.routing.auto_exclude = ["deep-27b"]
+
+    result = route(config, decision("general", 2.9))
+
+    deep = next(c for c in result.candidates if c.model is DEEP)
+    assert deep.feasible is False and "turned off in Settings" in (deep.infeasible_reason or "")
+    assert result.selected is not DEEP
+
+
+def test_an_excluded_model_that_is_loaded_keeps_serving() -> None:
+    config = Config()
+    config.routing.auto_exclude = ["med-27b"]
+
+    result = route(config, decision("medical", 1.5), resident=MED)
+
+    assert result.selected is MED and result.switch_required is False
+
+
+def test_an_excluded_model_can_still_be_requested_by_name() -> None:
+    config = Config()
+    config.routing.auto_exclude = ["deep-27b"]
+
+    result = route(config, decision("general", 1.0), explicit_model=DEEP)
+
+    assert result.selected is DEEP and result.switch_allowed is True
