@@ -112,6 +112,18 @@ SETTINGS: tuple[Setting, ...] = (
         "warn: allow a model whose RAM share may not fit, and say so. block: exclude it.",
         "choice", ("warn", "block"),
     ),
+    Setting(
+        "routing.guards.recording_guard", "Switch guards", "Protect lecture recordings",
+        "While Lecture Notes is recording, never load a model larger than the limit below, so "
+        "the transcription keeps its GPU memory. Smaller models can still be loaded.",
+        "bool",
+    ),
+    Setting(
+        "routing.guards.recording_max_model_gb", "Switch guards", "Largest model while recording",
+        "Model file size allowed during a recording. 9 GB keeps the 9B (8.2 GB) and holds off "
+        "both 27Bs (11.9 and 15.4 GB).",
+        "float", unit="GB",
+    ),
     # --- policy
     Setting(
         "policy.value_of_quality_s", "Policy", "Value of a better answer",

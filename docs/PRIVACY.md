@@ -199,6 +199,10 @@ Switchboard beyond loopback would need real credentials.
 * `C:\AI\Config\models.json` - read for model parameters. Written **only** by
   the dashboard, when a switch happens, and backed up first.
 * `C:\AI\models\*.gguf` - headers read, never modified, moved or deleted.
+* `C:\AI\Projects\lecture-notes\state\status.json` - read (never written) for
+  the recording guard: only `active`, `class_code`, `started_at` and
+  `updated_at` are used. The class code appears in routing reasons and on the
+  dashboard; nothing from the transcript is read.
 * `~/.cptr/config.toml` - read by `doctor` to report integration status, and
   written once by `integrate-cptr.ps1` with a backup.
 

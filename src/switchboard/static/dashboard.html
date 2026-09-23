@@ -878,6 +878,19 @@
     ));
     facts.appendChild(fact("uptime", fmtUptime(status.uptime_s)));
 
+    // A live lecture recording holds large model loads back (the recording guard).
+    var recording = status.recording || {};
+    if (recording.active) {
+      var held = recording.guard
+        ? ", no switch > " + recording.max_model_gb + " GB"
+        : ", guard off";
+      facts.appendChild(fact("recording",
+        withDot((recording.label || "lecture") + held, recording.guard ? "ok" : "warn"),
+        null, recording.detail || ""));
+    } else {
+      facts.appendChild(fact("recording", "no", "unknown", recording.detail || ""));
+    }
+
     var host = status.host || {};
     if (isNum(host.ram_free_gb) || isNum(host.ram_total_gb)) {
       facts.appendChild(fact("host RAM free",

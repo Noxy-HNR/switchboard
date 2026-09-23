@@ -130,6 +130,16 @@ X-Switchboard-Reason: Stayed on qwen3.5-9b: already loaded, and a coding task at
   load for +0.04 expected quality.
 ```
 
+## Lecture Notes (read-only)
+
+While Lecture Notes records, Switchboard will not load a model larger than
+`routing.guards.recording_max_model_gb` (9 GB), so the transcription keeps its
+GPU memory; smaller models can still be loaded. It learns this from
+`C:\AI\Projects\lecture-notes\state\status.json`, which it only reads. Turn the
+guard off or change the limit on the dashboard's Settings panel, under Switch
+guards. A request that names a large model during a recording gets a 409 that
+says so.
+
 ## The dashboard at :9090
 
 Switchboard depends on the existing dashboard for one thing: performing

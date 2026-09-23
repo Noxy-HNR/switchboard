@@ -212,6 +212,18 @@ prompt tokens/sec (seeded estimates in `config/models.toml` until measured).
    chat-title requests time out at 15 s). When the resident model cannot serve
    the request at all, or nothing is loaded, only the busy guard applies.
 
+**The recording guard comes before all three.** While Lecture Notes is
+recording (`recording.py` reads its `state\status.json`, which the recorder
+rewrites every 5 s; a missing, unreadable or >60 s stale file counts as not
+recording), a model whose file is larger than `recording_max_model_gb` (9 GB)
+is not a candidate. The large models here are configured to fill the GPU even
+when partially offloaded, so loading one mid-lecture could take the memory the
+transcription needs. The best remaining candidate still wins, so a move to a
+smaller model stays possible, and the loaded model is never forced out. The
+same check sits on the router's single switch path, so explicit requests (a
+409 naming the recording) and manual switches are covered too. `/status` and
+the dashboard header show whether a recording is holding switches.
+
 When a guard blocks a switch, that is recorded, not discarded. The guard's
 sentence is stored in `routes.reason`, the model it would have loaded is sent
 as the `X-Switchboard-Would-Switch-To` response header, and `POST /agent/route`

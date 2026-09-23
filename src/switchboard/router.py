@@ -37,6 +37,7 @@ from switchboard.policy import (
     RoutingPolicy,
     SessionState,
 )
+from switchboard.recording import RecordingState, RecordingWatch
 from switchboard.registry import (
     Measurement,
     ModelEntry,
@@ -213,6 +214,7 @@ class Router:
         self._store = store
         self._host = host or HostFacts()
         self._policy = RoutingPolicy(config)
+        self._recording = RecordingWatch(config.stack.recording_status_file)
         self._switch_lock = asyncio.Lock()
         self._inflight = 0
         self._snapshot: RegistrySnapshot | None = None
@@ -262,6 +264,10 @@ class Router:
                 await task
             with contextlib.suppress(Exception):
                 await chain.aclose()
+
+    def recording_state(self) -> RecordingState:
+        """Whether Lecture Notes is recording, read from its status file (cached briefly)."""
+        return self._recording.state()
 
     # --- registry -------------------------------------------------------
 
@@ -474,6 +480,7 @@ class Router:
             server_busy=facts.server_busy,
             executor_available=executor_available,
             executor_reason=executor_reason,
+            recording=self.recording_state(),
         )
 
         switch: SwitchResult | None = None
@@ -559,6 +566,10 @@ class Router:
                 )
             if not target.enabled or not target.exists:
                 return refused(f"{target.id} is disabled or its file is missing")
+            # Every switch passes here - automatic, explicit and manual alike -
+            # so a live lecture recording is protected whoever asks.
+            if self._policy.held_for_recording(target, current, self.recording_state()):
+                return refused(self._policy.recording_sentence(target, self.recording_state()))
             if self._inflight > 0:
                 return refused(f"{self._inflight} request(s) in flight through Switchboard")
             # A healthy server whose slot state is unknown is treated as busy: a
@@ -842,6 +853,11 @@ class Router:
         executor_ok, executor_reason = await self._executor.available()
         return {
             "mode": self._config.routing.mode,
+            "recording": {
+                **self.recording_state().describe(),
+                "guard": self._config.routing.guards.recording_guard,
+                "max_model_gb": self._config.routing.guards.recording_max_model_gb,
+            },
             "uptime_s": round(self.uptime_s, 1),
             "inflight": self._inflight,
             "upstream": status.describe(),

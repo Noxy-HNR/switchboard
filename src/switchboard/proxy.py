@@ -419,7 +419,10 @@ def _explicit_refusal(plan: RoutedPlan) -> _Refusal | None:
         return None
     if route.would_switch_to is not None:
         wanted = route.would_switch_to.id
-        cause = "Switchboard cannot switch models right now"
+        cause = (
+            route.reason.rstrip(".") if route.blocked_by == "recording"
+            else "Switchboard cannot switch models right now"
+        )
     elif plan.switch is not None and not plan.switch.ok:
         wanted = plan.switch.to_model
         cause = "the switch failed"

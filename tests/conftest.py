@@ -216,6 +216,9 @@ def config(stack: FakeStack, tmp_path: Path) -> Config:
     config.routing.mode = "active"
     # Cloud decisions are never attempted in tests, whatever the environment has.
     config.typesafe_api_key = None
+    # Never the real Lecture Notes status file: a lecture being recorded on this
+    # machine must not change what the tests route.
+    config.stack.recording_status_file = tmp_path / "lecture-notes-status.json"
     return config
 
 

@@ -48,6 +48,7 @@ from typing import Any, Literal, cast
 
 from switchboard.config import Config
 from switchboard.decisions.schema import DOMAINS, Difficulty, Domain, TaskDecision
+from switchboard.recording import RecordingState
 from switchboard.registry import ModelEntry, RegistrySnapshot
 from switchboard.system import MemoryStatus
 
@@ -375,6 +376,7 @@ class RoutingPolicy:
         server_busy: bool | None,
         executor_available: bool,
         executor_reason: str = "",
+        recording: RecordingState | None = None,
     ) -> RouteDecision:
         """Pick the model this request should run on."""
         estimate, value = self._policy_inputs(request, decision)
@@ -384,14 +386,18 @@ class RoutingPolicy:
         if request.explicit_model is not None:
             model = request.explicit_model
             switch_required = not (resident and resident.id == model.id)
+            held = switch_required and self.held_for_recording(model, resident, recording)
             allowed = (
                 switch_required
+                and not held
                 and self._config.routing.allow_explicit_switch
                 and self._config.routing.mode == "active"
                 and executor_available
             )
             if not switch_required:
                 reason = f"{model.id} was named by the request and is already loaded."
+            elif held:
+                reason = self.recording_sentence(model, recording)
             elif allowed:
                 reason = (
                     f"{model.id} was named by the request; loading it "
@@ -414,7 +420,11 @@ class RoutingPolicy:
                 policy=request.policy,
                 reason=reason,
                 would_switch_to=model if (switch_required and not allowed) else None,
-                blocked_by=None if (not switch_required or allowed) else "executor",
+                blocked_by=(
+                    None if (not switch_required or allowed)
+                    else "recording" if held
+                    else "executor"
+                ),
                 difficulty_used=difficulty,
                 domain_used=domain,
             )
@@ -471,10 +481,46 @@ class RoutingPolicy:
                 domain_used=domain,
             )
 
-        # A move is wanted. Check the guards in order of how much they cost to hit.
+        # A move is wanted. First the recording guard: while Lecture Notes records,
+        # a large model is not an option at all, but a smaller one still is - so
+        # the best allowed candidate is found rather than the switch refused.
+        held_note = ""
+        if self.held_for_recording(best.model, resident, recording):
+            permitted = [
+                candidate for candidate in feasible
+                if not self.held_for_recording(candidate.model, resident, recording)
+            ]
+            alternative = max(permitted, key=lambda candidate: candidate.utility, default=None)
+            stays = alternative is None or (
+                resident_candidate is not None and alternative.model.id == resident_candidate.model.id
+            )
+            if stays:
+                return RouteDecision(
+                    selected=resident_candidate.model if resident_candidate else resident,
+                    resident=resident,
+                    switch_required=False,
+                    switch_allowed=False,
+                    policy=request.policy,
+                    reason=self._recording_hold_reason(best, resident_candidate, recording),
+                    would_switch_to=best.model,
+                    blocked_by="recording",
+                    candidates=candidates,
+                    warnings=best.warnings,
+                    difficulty_used=difficulty,
+                    domain_used=domain,
+                )
+            assert alternative is not None
+            held_note = (
+                f" {best.model.id} ({best.model.size_gb:.1f} GB) would be the first choice, "
+                "but it is held off while Lecture Notes records."
+            )
+            best = alternative
+
+        # Then the other guards, in order of how much they cost to hit.
         blocked_by, block_reason = self._blocking_guard(
             request, best, resident_candidate, server_busy, executor_available, executor_reason
         )
+        block_reason += held_note if blocked_by is not None else ""
 
         if blocked_by is not None:
             fallback = resident_candidate.model if resident_candidate else (resident or best.model)
@@ -499,7 +545,7 @@ class RoutingPolicy:
             switch_required=True,
             switch_allowed=True,
             policy=request.policy,
-            reason=self._switch_reason(best, resident_candidate, estimate),
+            reason=self._switch_reason(best, resident_candidate, estimate) + held_note,
             candidates=candidates,
             warnings=best.warnings,
             difficulty_used=difficulty,
@@ -555,6 +601,45 @@ class RoutingPolicy:
             weighted_difficulty=level_weights is not None,
         )
         return estimate, value
+
+    # --- the recording guard ----------------------------------------------
+
+    def held_for_recording(
+        self, model: ModelEntry, resident: ModelEntry | None, recording: RecordingState | None
+    ) -> bool:
+        """Whether loading `model` now could take GPU memory a live recording needs.
+
+        Measured by file size, because that is what predicts it on this machine:
+        the large models are configured to fill the GPU even when partially
+        offloaded. The loaded model itself is never held - staying costs nothing -
+        and a smaller model stays allowed, since moving to it can only give memory
+        back.
+        """
+        guards = self._config.routing.guards
+        if not guards.recording_guard or recording is None or not recording.active:
+            return False
+        if resident is not None and model.id == resident.id:
+            return False
+        return model.size_gb > guards.recording_max_model_gb
+
+    def recording_sentence(self, model: ModelEntry, recording: RecordingState | None) -> str:
+        limit = self._config.routing.guards.recording_max_model_gb
+        what = recording.label if recording and recording.label else "a lecture"
+        return (
+            f"{model.id} ({model.size_gb:.1f} GB) is held off while Lecture Notes records {what}: "
+            f"models over {limit:g} GB wait until the recording ends, so the transcription "
+            "keeps its GPU memory."
+        )
+
+    def _recording_hold_reason(
+        self, best: Candidate, resident_candidate: Candidate | None, recording: RecordingState | None
+    ) -> str:
+        stay = (
+            f"Stayed on {resident_candidate.model.id}. "
+            if resident_candidate is not None
+            else "Answering on the loaded model. "
+        )
+        return stay + self.recording_sentence(best.model, recording)
 
     def _blocking_guard(
         self,

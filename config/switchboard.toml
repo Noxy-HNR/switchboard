@@ -26,6 +26,9 @@ models_dir = 'C:\AI\models'
 models_config = 'C:\AI\Config\models.json'
 # The dashboard owns starting/stopping llama-server. Switchboard asks it to switch.
 dashboard_url = "http://127.0.0.1:9090"
+# Read-only: Lecture Notes rewrites this every 5 s while recording. A missing,
+# unreadable or stale (>60 s) file counts as "not recording".
+recording_status_file = 'C:\AI\Projects\lecture-notes\state\status.json'
 
 [routing]
 # active = switchboard-auto may switch the loaded model through the dashboard.
@@ -58,6 +61,14 @@ utility_max_tokens = 160
 # not fit; warn = allow it and record the risk in the routing reason.
 ram_guard = "warn"
 ram_headroom_gb = 1.0
+# While a Lecture Notes recording runs (read from its status file, see [stack]),
+# never load a model file larger than this. The 27Bs are configured to fill the
+# GPU even when partially offloaded, so loading one mid-lecture could take the
+# memory the transcription model needs. Smaller models stay allowed, the loaded
+# model is never forced out, and the guard covers automatic, explicit and
+# manual switches alike. 9 GB keeps the 9B and holds off both 27Bs.
+recording_guard = true
+recording_max_model_gb = 9.0
 
 [policy]
 # What a better answer is worth, expressed as seconds of extra waiting the user

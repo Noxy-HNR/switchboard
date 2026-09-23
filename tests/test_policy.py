@@ -17,6 +17,7 @@ import pytest
 from switchboard.config import Config
 from switchboard.decisions.schema import TaskDecision
 from switchboard.policy import RouteRequest, RoutingPolicy, SessionState
+from switchboard.recording import RecordingState
 from switchboard.registry import Measurement, ModelEntry, RegistrySnapshot
 from switchboard.system import MemoryStatus
 
@@ -117,6 +118,7 @@ def route(
     memory: MemoryStatus = PLENTY_OF_RAM,
     busy: bool = False,
     executor_available: bool = True,
+    recording: RecordingState | None = None,
     **request_kwargs,
 ):
     policy = RoutingPolicy(config)
@@ -133,6 +135,7 @@ def route(
         server_busy=busy,
         executor_available=executor_available,
         executor_reason="fake executor",
+        recording=recording,
     )
 
 

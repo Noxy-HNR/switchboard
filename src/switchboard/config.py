@@ -66,6 +66,8 @@ class StackConfig(_Section):
     models_dir: Path = Path(r"C:\AI\models")
     models_config: Path = Path(r"C:\AI\Config\models.json")
     dashboard_url: str = "http://127.0.0.1:9090"
+    # Read-only: Lecture Notes' live status, for the recording guard.
+    recording_status_file: Path = Path(r"C:\AI\Projects\lecture-notes\state\status.json")
 
 
 class GuardConfig(_Section):
@@ -77,6 +79,9 @@ class GuardConfig(_Section):
     utility_max_tokens: int = Field(default=160, ge=0)
     ram_guard: Literal["warn", "block"] = "warn"
     ram_headroom_gb: float = Field(default=1.0, ge=0)
+    # While Lecture Notes records, no switch to a model file larger than this.
+    recording_guard: bool = True
+    recording_max_model_gb: float = Field(default=9.0, gt=0)
 
 
 class RoutingConfig(_Section):

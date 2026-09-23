@@ -72,7 +72,9 @@ mysterious:
 
 A switch has to clear three bars: it must be worth more than the seconds it
 costs, it must actually improve the answer, and the moment has to be right
-(server idle, conversation settled, not a short utility call).
+(server idle, conversation settled, not a short utility call). And while
+Lecture Notes is recording, no model over 9 GB is loaded at all, so the
+transcription keeps its GPU memory.
 
 Most requests never pay for a semantic decision at all - the rule engine
 settles them in about a millisecond, and only genuinely hard or medical
