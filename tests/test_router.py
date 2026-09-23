@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,7 @@ from switchboard.config import Config
 from switchboard.decisions.base import StepContext, TaskContext
 from switchboard.decisions.schema import StepDecision
 from switchboard.router import recommend_next
+from switchboard.registry import build_registry
 from switchboard.store import Store
 
 from conftest import DEEP, FAST, FakeExecutor, FakeLlama, build_router
@@ -64,6 +66,23 @@ async def test_the_registry_is_built_from_the_stack_on_disk(config: Config) -> N
         assert medical.host_ram_estimate_gb() > 0
     finally:
         await close(router)
+
+
+def test_unavailable_network_model_does_not_hide_local_models(config: Config, monkeypatch) -> None:
+    """A network link can be listed by glob while stat fails after an outage."""
+    unavailable = config.stack.models_dir / FAST
+    original_stat = Path.stat
+
+    def stat_with_outage(path: Path, *args, **kwargs):
+        if path == unavailable:
+            raise FileNotFoundError("network share offline")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_with_outage)
+    snapshot = build_registry(config)
+    assert snapshot.by_id("fast-9b").exists is False
+    assert {model.id for model in snapshot.routable()} == {"deep-27b", "med-27b"}
+    assert any("model file unavailable" in problem for problem in snapshot.problems)
 
 
 async def test_resolve_requested_model(config: Config) -> None:

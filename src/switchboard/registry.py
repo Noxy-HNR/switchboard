@@ -271,6 +271,15 @@ def build_registry(
     for filename in filenames:
         path = on_disk.get(filename, models_dir / filename)
         exists = filename in on_disk
+        size_bytes = 0
+        if exists:
+            try:
+                # A local link to a network model can remain in the directory
+                # while the share is offline. Keep the local registry usable.
+                size_bytes = path.stat().st_size
+            except OSError as error:
+                exists = False
+                problems.append(f"{filename}: model file unavailable ({error})")
         raw_settings = settings.get(filename)
         model_settings: dict[str, Any] = raw_settings if isinstance(raw_settings, dict) else {}
         model_overlay = overlay.get(filename, {})
@@ -305,7 +314,7 @@ def build_registry(
             gpu_layers=model_settings.get("gpuLayers"),
             configured=bool(model_settings),
             launch_args=dict(model_settings),
-            size_bytes=path.stat().st_size if exists else 0,
+            size_bytes=size_bytes,
             native_context=info.context_length,
             block_count=info.block_count,
             architecture=info.architecture,
