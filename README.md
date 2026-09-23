@@ -99,7 +99,7 @@ hardcoded:
 
 | Model | Role | Speed | Notes |
 | --- | --- | --- | --- |
-| `qwen3.5-9b` | general, fast | ~39 tok/s | fully GPU resident, the daily driver |
+| `qwen3.5-9b` | general, fast | 20-38 tok/s measured | fully GPU resident, the daily driver; reloads in ~11 s |
 | `qwen3.8-27b` | deep reasoning | ~10 tok/s | partially offloaded, ~3x slower |
 | `medgemma-27b` | medical specialist | ~5 tok/s | its template cannot express tool calls, so tool requests never route here |
 

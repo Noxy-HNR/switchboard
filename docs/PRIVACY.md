@@ -7,12 +7,15 @@ on it.
 
 **Only the Jev backend sends anything anywhere**, and only when
 `TYPESAFE_API_KEY` is set and `privacy.allow_cloud` is true. With no key,
-Switchboard is entirely local: the logit and rule backends never open an
-outbound connection, and the local adapter talks only to `127.0.0.1:10000`.
+Switchboard is entirely local: the rule backend opens no connection at all, and
+the local adapter and the (disabled by default) logit backend talk only to
+llama-server at `upstream.base_url` (`127.0.0.1:10000`).
 
-When Jev is enabled, one request per decision carries a small JSON object
-holding only the fields a question names (`decisions/state.py`, shared by every
-backend):
+When Jev is enabled, each decision sends one request (the SDK resends that same
+request up to `decisions.jev.max_retries` more times, 1 by default, when an
+attempt fails in a retryable way; no new data is added). It carries a small JSON
+object holding only the fields a question names (`decisions/state.py`, shared
+by every backend):
 
 ```json
 {"request": {"message": "<latest user turn>",
@@ -26,8 +29,9 @@ the token estimate are never sent: no question is about them, and the policy
 reads them directly on this machine.
 
 A finished agent step sends `task.goal`, `step.action`, `step.result`,
-`step.attempt`, `step.exit_code` and up to three `earlier_attempts`, through the
-same steps below. One exception: when the step's **result** is itself pasted
+`step.exit_code` and up to three `earlier_attempts`, through the same steps
+below. The retry count is not sent: no question is about it, and the
+recommendation reads it on this machine. One exception: when the step's **result** is itself pasted
 machine output (the usual case for a terminal command), Jev is not asked at
 all. Minimizing it would leave the step questions judging a placeholder in
 place of the evidence, so the step is declined as `skipped` and judged by a
@@ -36,9 +40,12 @@ local backend that can read the real output.
 Before any of that is assembled, every string goes through three steps:
 
 1. **Pasted machine output stays on this machine.** Python tracebacks, fenced
-   code blocks, runs of terminal output (shell prompts, log lines, stack frames,
-   `KEY=value` environment lines), JSON and XML/HTML documents, and PEM key
-   material are replaced by a one-line description:
+   code blocks (backtick or tilde), runs of terminal output (shell prompts,
+   log lines, stack frames, compiler diagnostics, directory listings, git
+   status, `KEY=value` environment lines), JSON and XML/HTML documents, and PEM
+   key material are replaced by a one-line description. As a backstop, any
+   paragraph of four or more lines that reads as data rather than sentences
+   (unfenced YAML, CSV or code) becomes `[pasted text omitted: N lines]`:
 
    ```
    Why does this fail?
@@ -59,18 +66,27 @@ Before any of that is assembled, every string goes through three steps:
    disabled.
 2. **Secrets are stripped** from what remains. `privacy.py` replaces
    credential-shaped spans with typed placeholders: API keys (OpenAI,
-   Anthropic, GitHub, AWS, Slack, Google, Browser Use, TypeSafe), bearer and
-   basic tokens, `Authorization:` and `Cookie:` headers, JWTs, private key
-   blocks, connection strings with passwords, `key = value` and JSON
-   `"key": "value"` pairs whose name looks like a credential, `.env`-shaped
-   lines, email addresses and card-shaped digit runs.
+   Anthropic, GitHub, AWS, Slack, Google, Browser Use, TypeSafe), bearer
+   tokens, `Authorization:`/`Proxy-Authorization:` and `Cookie:`/`Set-Cookie:`
+   header lines (a Basic credential is caught only inside such a header), JWTs,
+   private key blocks, connection strings with passwords, `key = value` and
+   JSON `"key": "value"` pairs whose name looks like a credential (including
+   `PASS` and `PWD` names such as `DB_PASS`), `.env`-shaped lines, email
+   addresses, US social security numbers (123-45-6789) and card-shaped digit
+   runs. One exception is deliberate: a count of up to nine digits under a
+   plural *tokens* name, such as `max_tokens: 256`, is routing signal and is
+   kept; a singular token name keeps every value redacted, because one-time
+   and reset codes are that short. Every pattern runs in time linear in the
+   text, so a crafted request cannot stall the service.
 3. **One shared budget.** `privacy.max_state_chars` (1500 by default) caps the
    whole state, not each field, in fixed shares: the previous message gets at
    most 300 characters and the current message the rest; for a step, the goal,
    the action and the earlier attempts are each capped and the result gets
-   everything they leave. A field that comes out empty is dropped rather than
-   sent as an empty string. Long text keeps both ends, because the topic is at
-   the start and the question at the end.
+   everything they leave. An optional field (the previous message, an earlier
+   attempt) that comes out empty is dropped rather than sent as an empty
+   string; the message, goal, action and result are always sent, and an empty
+   result is kept on purpose because it is itself evidence. Long text keeps
+   both ends, because the topic is at the start and the question at the end.
 
 Which *kinds* of content were withheld is recorded in the decision's notes -
 "kept local: Python traceback", "redacted: openai-key, email" - and the content
@@ -110,9 +126,11 @@ code, not by convention:
   so a caller cannot smuggle text through the hash column either.
 * **No previews by default.** `privacy.store_previews` is **off**: the
   database holds a hash of each request and nothing of its text. Turning it on
-  keeps an 80-character excerpt for debugging, which the router redacts and
-  the store then redacts and truncates again regardless of what it was given;
-  `privacy.preview_chars` can only tighten that limit, never raise it past 200.
+  keeps a redacted excerpt of `privacy.preview_chars` characters (80 by
+  default) for debugging. The router redacts it, and the store then redacts
+  and truncates it again regardless of what it was given. `preview_chars` can
+  be at most 200: a larger value is rejected when the config loads, and the
+  store clamps to 200 anyway.
 * **Agent steps arrive hashed.** Goals and actions are hashed by the router
   before the store sees them.
 * **Nothing upstream says is kept.** When llama-server or a decision provider
@@ -128,10 +146,21 @@ store_previews = true
 
 ### What the logs hold
 
-`logs/switchboard.out.log` and `.err.log` carry uvicorn's startup lines and
-warnings. Request bodies are not logged. The Jev backend builds its error
-messages from the exception type and status code only, never the response body,
-so a provider echoing state back cannot leak it into a log.
+`logs/switchboard.err.log` holds everything the service logs; `.out.log` stays
+empty. At INFO level that is uvicorn's startup lines, Switchboard's own startup
+line and warnings, MCP session lines, and one httpx line per HTTP call
+Switchboard makes (to llama-server, the `C:\AI` dashboard or a decision
+provider), giving only the method, URL and status, for example
+`HTTP Request: POST http://127.0.0.1:10000/v1/chat/completions "HTTP/1.1 200 OK"`.
+Request and response bodies are not logged.
+
+The Jev backend builds its error messages from provider metadata: the exception
+type, the status code and the request id. Three exceptions: an error the SDK
+raises while building a request keeps the SDK's own message, capped at 120
+characters (the SDK masks credentials in it); an unknown choice label is quoted,
+capped at 40 characters; an out-of-range score or probability is quoted as a
+number. No other part of a response body is used, so a provider echoing state
+back can leak at most a 40-character label into a log.
 
 ## Who can call it
 
@@ -160,8 +189,12 @@ Switchboard beyond loopback would need real credentials.
   written once by `integrate-cptr.ps1` with a backup.
 
 The cptr config file stores a Browser Use API key in plaintext. Switchboard
-does not read, copy or transmit it; its redaction rules would strip a `bu_…`
-token from anything outbound. Flagged here because it is worth knowing.
+never transmits it: `doctor` reads the file only to check that Switchboard's
+own URL is in it, and the redaction rules would strip a `bu_…` token from
+anything outbound. But `integrate-cptr.ps1` copies the whole file, key
+included, to `backups\cptr-config.toml.<timestamp>.bak` (git-ignored) before it
+edits the config, so that backup holds the same plaintext key and deserves the
+same care as the original.
 
 ## The upstream's own exposure
 

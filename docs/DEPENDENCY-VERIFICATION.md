@@ -1,7 +1,9 @@
 # Dependency verification
 
 Every external interface Switchboard codes against, checked against the current
-official source on **2026-09-18 / 2026-09-19** rather than assumed. Where the
+official source on **2026-09-18 / 2026-09-19** (the TypeSafe SDK and System One
+Adapter sections re-checked on **2026-09-22** for typesafe-sdk 0.7.1 and
+system-one-adapter 0.2.1) rather than assumed. Where the
 original brief's expectation turned out to be right, that is recorded too —
 confirming an assumption is a result.
 

@@ -10,7 +10,7 @@ machine behaves exactly as it did before.
 | --- | --- | --- |
 | `~/.cptr/config.toml` | Added a "Switchboard" chat connection and a "switchboard" MCP tool server. Existing entries untouched. | `backups/cptr-config.toml.20260921-151843.bak` |
 | `C:\AI\start.ps1` | Added a marker-bracketed block that starts Switchboard before the final health check. | `backups/start.ps1.20260921-101859.bak` |
-| `C:\AI\Config\models.json` | `activeModel` changed from `medgemma-27b-it-Q4_K_M.gguf` to `Qwen3.5-9B-UD-Q6_K_XL.gguf`, by the dashboard, when a model was loaded. | `backups/models.json.20260921-150256.premanual.bak` (pre-change) and `backups/models.json.20260921-151716.bak` |
+| `C:\AI\Config\models.json` | `activeModel` changed from `medgemma-27b-it-Q4_K_M.gguf` to `Qwen3.5-9B-UD-Q6_K_XL.gguf`, by the dashboard, when a model was loaded. | `backups/models.json.20260921-150256.premanual.bak` (before any change), then `backups/models.json.<stamp>.bak`, one per Switchboard process, taken before that process's first switch |
 
 Created, not changed: `C:\AI\Switchboard\` (the project), and
 `C:\AI\Switchboard\data\switchboard.sqlite3` (its database).

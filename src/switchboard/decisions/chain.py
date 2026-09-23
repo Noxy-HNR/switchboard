@@ -360,8 +360,8 @@ class DecisionChain:
     ) -> DecisionResult | None:
         """Answer cheaply when the rule engine already settles the question.
 
-        Measured on this machine: a semantic backend costs about 2.3 seconds per
-        task decision, and the rule engine costs half a millisecond. For a
+        Measured on this machine: a semantic backend costs 1.3-2.3 seconds per
+        task decision, and the rule engine under a millisecond. For a
         request the rules are confident is easy, those seconds buy nothing - an
         easy request stays on whatever model is already loaded whatever a
         semantic backend would have said - so they are not spent.

@@ -51,7 +51,8 @@ never_switch_when_busy = true
 # whatever is resident.
 max_switch_wait_s = 300.0
 # Small non-streaming calls are utility traffic (cptr generates chat titles with
-# max_tokens=100 and a 15s client timeout). Never make those wait for a load.
+# max_tokens=100 and a 15s client timeout). Never make those wait for a load
+# while a usable model is resident.
 utility_max_tokens = 160
 # block = refuse to auto-switch to a model whose estimated host-RAM footprint does
 # not fit; warn = allow it and record the risk in the routing reason.
@@ -96,10 +97,10 @@ backends = ["jev", "local", "rules"]
 # then loses to the next backend, and ultimately to the rules backend.
 #
 # 6s, because the budget has to cover a failed cloud attempt *and* a local one
-# after it: a Jev auth failure costs ~1.2s here and a local decision ~3s, and at
-# 4s the local backend was being squeezed out by a cloud provider that was
-# already broken. Most requests never spend any of this - the fast path answers
-# them in under a millisecond.
+# after it: a Jev auth failure costs ~1.2s here and a local decision 1.3-1.5s
+# (p50/p95, 2026-09-23; ~3s on a busier day), and at 4s the local backend was
+# being squeezed out by a cloud provider that was already broken. Most requests
+# never spend any of this - the fast path answers them in under a millisecond.
 budget_ms = 6000
 # Identical requests within this window reuse the previous decision.
 cache_ttl_s = 300
@@ -139,10 +140,12 @@ max_output_tokens = 512
 
 [decisions.logit]
 # Experimental: reads first-token probabilities from llama.cpp instead of
-# generating JSON. Off by default because its numbers are a next-token
-# distribution, not calibrated probabilities - they sit near 0.99 almost always
-# - and the brief is explicit that uncalibrated numbers must not be passed off
-# as probabilities. See docs/EXPERIMENT-LOGITS.md before turning it on.
+# generating JSON. Off because its numbers are a next-token distribution, not
+# validated probabilities - often sharply peaked, and nothing shows a stated 0.9
+# is right 90% of the time - and the brief allows it only if its probability
+# behaviour can be validated. It also measured below the adapter backend (task
+# agreement 0.43 vs 0.68, 2026-09-23). See docs/EXPERIMENT-LOGITS.md before
+# turning it on.
 enabled = false
 timeout_s = 15.0
 top_logprobs = 20
@@ -156,7 +159,7 @@ enabled = true
 [decisions.fast_path]
 # Ask the rule engine first and stop there when it is confident the request is
 # easy. An easy request stays on the resident model whatever a semantic backend
-# would have said, and a semantic backend costs ~2.3s here, so those seconds
+# would have said, and a semantic backend costs 1.3-2.3s here, so those seconds
 # would buy nothing. Everything else goes through the full chain.
 enabled = true
 max_difficulty = 1.0

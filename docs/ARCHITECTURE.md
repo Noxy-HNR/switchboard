@@ -51,7 +51,7 @@ guesses what a request is about.
 | `gguf.py` | GGUF header reader: native context, layer count, chat template |
 | `registry.py` | the model registry, built from `Config\models.json` + GGUF + `config/models.toml` + measurements |
 | `system.py` | host facts: free RAM (`GlobalMemoryStatusEx`), GPU (`nvidia-smi`), cached |
-| `upstream.py` | the only code that talks to llama-server: health, resident model, busy, router detection |
+| `upstream.py` | the routing and proxy path's llama-server client: health, resident model, busy, router detection, forwarded completions (the `local` and `logit` decision backends post their own `/v1/chat/completions` requests) |
 | `executor.py` | how a switch is carried out (`DashboardExecutor`, `NullExecutor`) |
 | `decisions/schema.py` | **the questions**, shared verbatim by every backend, and the answer types |
 | `decisions/base.py` | the backend contract: availability, `BackendError`, contexts |
@@ -72,8 +72,9 @@ guesses what a request is about.
 
 ## The decision surface
 
-Four questions per request, asked in **one** call (the TypeSafe docs measure
-batching as an order of magnitude cheaper and faster):
+Four questions per request, asked in **one** call by Jev and by the local
+adapter (the TypeSafe docs measure batching as an order of magnitude cheaper
+and faster). The experimental logit backend asks them one per request:
 
 - `domain` — Choice over general / coding / medical / writing / research / system_ops
 - `difficulty` — Score over four described levels, 0 (trivial) to 3 (hard)
@@ -94,14 +95,20 @@ over differently named state would not be comparable answers.
 
 The state holds only what a question names. `request.message`, plus
 `request.previous_message` and `request.has_images` when present; for a step,
-`task.goal`, `step.action`, `step.result`, `step.attempt`, `step.exit_code` and
-`earlier_attempts`. The system prompt, the client's tool roster and the turn
-number are facts the policy reads directly, not evidence for any question, so
-no model sees them. A shared character budget is split in fixed shares: the
-previous message is capped at 300 characters and the current message gets the
-rest; the step result gets whatever goal, action and earlier attempts (each
-capped) leave. A field that cleans to nothing is dropped rather than sent as
-an empty string a literal reader might take as evidence. How the text is
+`task.goal`, `step.action`, `step.result`, `step.exit_code` and
+`earlier_attempts`. The system prompt, the client's tool roster, the turn
+number and the retry count are not evidence for any question, so no model sees
+them. The policy reads only whether tools are present (`has_tools`) and a
+prompt-size estimate that includes the system prompt's length; the step
+recommendation reads the retry count; the turn number is not used. A shared
+character budget is split in fixed shares: the previous message is capped at
+300 characters and the current message gets the rest; the step result gets
+whatever goal, action and earlier attempts (each capped) leave. An optional
+field (the previous message, an earlier attempt) that cleans to nothing is
+dropped rather than sent as an empty string a literal reader might take as
+evidence; the message, goal, action and result are always sent, and an empty
+`step.result` is kept on purpose because an empty result is itself evidence.
+How the text is
 cleaned is the backend's business: Jev minimizes and redacts
 ([PRIVACY.md](PRIVACY.md)), the local backends only truncate.
 
@@ -138,8 +145,10 @@ shows the schema to the model, so in the adapter's native mode the questions,
 which live in the schema's descriptions, would never reach the model. Prompted
 mode has the adapter put them in its single system message, and its own trace
 records exactly what the model saw. A reply cut off at `max_tokens` is refused
-as invalid (not retried, not counted as an outage), and token counts
-llama-server did not report are left out rather than recorded as zero.
+as invalid and not retried; like every invalid answer it counts toward the
+breaker, so three in a row park the backend for `breaker_cooldown_s` rather
+than spend each request's budget on it. Token counts llama-server did not
+report are left out rather than recorded as zero.
 
 When is the local backend allowed to run? Only when llama-server is healthy,
 **idle** (`--parallel 1` means a decision call would queue behind a real
@@ -155,21 +164,30 @@ For each model that is feasible for this request:
 utility(m) = value_of_quality_s * E[P(good answer | m)] - seconds_of_waiting(m)
 E[P(good answer | m)] = sum over domain d, level l of w(d) * w(l) * q(m, d, l)
 q(m, d, l) = sigmoid(capability_slope * (ceiling(m, d) - l))
-seconds_of_waiting(m) = switch_cost(m) + prompt_time(m) + generation_time(m)
+seconds_of_waiting(m) = switch_cost(m) + prompt_time(m) + g * generation_time(m)
 ```
+
+where `g` is `generation_wait_weight` (default 0.35) for a streaming request,
+whose answer starts arriving at once, and 1.0 for a non-streaming one, whose
+caller waits for all of it.
 
 The weights `w` are the calibrated distributions when the backend has them
 (Jev): a request that is 55% general and 45% medical is scored as exactly that,
 and each difficulty level is scored at its own level before weighting, because
 a Score does not license interpolating between levels. Without a calibrated
-distribution the point answer gets all the weight. Either way, a split that
-mattered is named in the reason ("general 55%, medical 45%").
+distribution the point answer gets all the weight. When a calibrated domain
+split mattered (a second domain at 15% or more), the stay or switch reason
+names it ("general 55%, medical 45%"); uncalibrated decisions and guard-blocked
+reasons name no split.
 
 Quality is expressed **in seconds** so it can be compared with waiting, and
 `value_of_quality_s` (default 400) is the single knob that says how much a better
 answer is worth. `ceiling(m, domain)` is a prior from `config/models.toml` — an
-editable policy parameter, clearly not a benchmark. Everything else is measured:
-`switch_cost` from observed loads, `generation_time` from observed tokens/sec.
+editable policy parameter, clearly not a benchmark. Everything else is measured
+where a measurement exists: `switch_cost` from observed loads (file size ×
+`default_load_s_per_gb` until a model has been loaded), `generation_time` from
+observed tokens/sec (5 tok/s assumed when unknown), and `prompt_time` from
+prompt tokens/sec (seeded estimates in `config/models.toml` until measured).
 
 **Feasibility is checked before scoring**, and infeasibility is a hard no:
 
@@ -185,13 +203,19 @@ editable policy parameter, clearly not a benchmark. Everything else is measured:
 1. `hysteresis_seconds` — utility must beat staying put by a margin;
 2. `min_quality_gain` — and the answer must actually get better;
 3. `min_dwell_seconds`, `never_switch_when_busy`, `utility_max_tokens` — and the
-   moment has to be right: not seconds after the last switch, not while
+   moment has to be right: not within `min_dwell_seconds` of this
+   conversation's own last switch (dwell is tracked per session, so another
+   conversation, or a request without one, is not held), not while
    llama-server is generating for someone else, and never for a short
-   non-streaming utility call (cptr's chat-title requests time out at 15 s).
+   non-streaming utility call while a usable model is resident (cptr's
+   chat-title requests time out at 15 s). When the resident model cannot serve
+   the request at all, or nothing is loaded, only the busy guard applies.
 
-When a guard blocks a switch, that is recorded, not discarded:
-`would_switch_to` plus `blocked_by` end up in the database and in the response
-headers, which is what makes shadow mode useful.
+When a guard blocks a switch, that is recorded, not discarded. The guard's
+sentence is stored in `routes.reason`, the model it would have loaded is sent
+as the `X-Switchboard-Would-Switch-To` response header, and `POST /agent/route`
+returns both `would_switch_to` and `blocked_by` in its `routing` object. That
+is what makes shadow mode useful.
 
 **Stickiness** comes from the conversation's running difficulty: the policy uses
 `max(instant difficulty, session EWMA)`, so one short follow-up in a hard
@@ -219,8 +243,8 @@ socket.
 | Switchboard restarts llama-server | it asks the dashboard to | one code path for launching llama-server, and `Build-LlamaArgs.ps1` stays the single source of truth for arguments |
 | llama.cpp router mode as the multi-model mechanism | detected, reported, not used | it would change the launch path the brief asks to preserve; see [DEPENDENCY-VERIFICATION.md](DEPENDENCY-VERIFICATION.md#why-router-mode-is-not-used) |
 | Local fallback = System One Adapter | that, plus an availability gate | on this machine the adapter's cost depends entirely on which model is resident, so it refuses when the resident model is slow or busy |
-| Experimental logit backend | implemented, **off** | its probabilities are the model's next-token distribution, which is meaningful but not calibrated; it stays off until the eval says otherwise ([EXPERIMENT-LOGITS.md](EXPERIMENT-LOGITS.md)) |
-| Shadow mode as the default | `mode = "active"` | you chose auto-switching through the dashboard; shadow remains one setting away, and pass-through traffic is still shadow-evaluated |
+| Experimental logit backend | implemented, **off** | its probabilities are a next-token distribution that could not be validated as calibrated, and it measured below the adapter backend ([EXPERIMENT-LOGITS.md](EXPERIMENT-LOGITS.md)) |
+| Shadow mode as the default | `mode = "active"` | you chose auto-switching through the dashboard; shadow remains one setting away. Requests that name a model, and all traffic in `mode = "off"`, bypass the decision layer (`X-Switchboard-Backend: bypass`) and are not evaluated |
 
 ## If the stack moves to router mode
 

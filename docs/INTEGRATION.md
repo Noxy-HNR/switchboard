@@ -30,7 +30,7 @@ be explicit:
 | Model | Behaviour |
 | --- | --- |
 | `switchboard-auto` | Full policy: judge the request, pick the model, switch if it is worth it |
-| `switchboard-fast` | Never leave the loaded model |
+| `switchboard-fast` | Stay on the loaded model whenever it can serve the request (a model is loaded only if nothing usable is resident) |
 | `switchboard-deep` | Prefer the strongest reasoning model |
 | `switchboard-medical` | Prefer the medical specialist |
 | `qwen3.5-9b`, `qwen3.8-27b`, `medgemma-27b` | Exactly that model, loading it if needed |
@@ -38,7 +38,7 @@ be explicit:
 cptr's client timeouts are worth knowing: 300 s stream read, 30 s connect, and
 **15 s** for the small non-streaming call it uses to generate chat titles. That
 last one is why Switchboard never makes a short non-streaming request wait for
-a model load (`routing.guards.utility_max_tokens`).
+a model load while a usable model is resident (`routing.guards.utility_max_tokens`).
 
 ### Undo
 
