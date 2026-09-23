@@ -19,7 +19,7 @@ Reports cited below are in `reports/`: `live-20260923-043849` (23 live checks),
 | # | Requirement | Status | Evidence |
 | --- | --- | --- | --- |
 | 1 | A maintainable implementation, not a scaffold | PASS | 32 modules under `src/switchboard/`, 575 tests, `mypy` reports no issues in any module, docs. No TODOs standing in for behaviour. |
-| 2 | Installs into a clean project-local environment | PASS | CLEAN_INSTALL_EVIDENCE |
+| 2 | Installs into a clean project-local environment | PASS | A fresh `git clone` of the final commit into an empty directory, then `uv sync --frozen`, built a new `.venv` from the lockfile in 1.5 s (from uv's package cache), and **575 passed** there. `scripts/setup.ps1` runs plain `uv sync` against the same lockfile. Nothing global changed. |
 | 3 | Automated tests pass | PASS | `uv run pytest -q` → **575 passed**. Offline: every test uses mock transports, so the suite passes with the stack stopped. |
 | 4 | Switchboard starts | PASS | `scripts/start.ps1` → "Switchboard is ready"; the PID file records PID and start time, and `scripts/stop.ps1` checks both plus the command line before stopping anything. |
 | 5 | Health/status endpoints work | PASS | `GET /health` → `{"status":"ok","mode":"active","upstream_healthy":true,"resident_model":"qwen3.5-9b"}`; `switchboard doctor`: 16 checks, 0 failed. |
