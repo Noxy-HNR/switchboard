@@ -118,3 +118,17 @@ async def test_dashboard_is_served() -> None:
     assert 'id="mode-badge"' in body
     assert 'id="routes-body"' in body
     assert "no routes recorded yet" in body, "the empty state must ship with the page"
+
+
+def test_dashboard_has_a_settings_panel_wired_to_a_mounted_api(page: str) -> None:
+    """The settings panel reads and writes /settings; both halves must stay in step."""
+    assert 'id="settings-btn"' in page and 'id="settings-wrap"' in page
+    assert 'var SETTINGS_API = "/settings";' in page
+    documented = set(create_app(Config()).openapi()["paths"])
+    assert {"/settings", "/settings/{path}", "/settings/keys/{key_id}", "/settings/keys/{key_id}/test"} <= documented
+
+
+def test_a_typed_key_goes_into_a_password_field_that_is_cleared_on_send(page: str) -> None:
+    """The one secret the page handles is never echoed: masked while typed, gone once sent."""
+    assert 'input.type = "password";' in page
+    assert 'input.value = "";' in page

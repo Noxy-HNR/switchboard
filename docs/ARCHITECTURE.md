@@ -46,7 +46,8 @@ guesses what a request is about.
 
 | Module | Responsibility |
 | --- | --- |
-| `config.py` | TOML + `.env` + environment; one `Config` object, no globals |
+| `config.py` | `switchboard.toml`, then the dashboard's `local.toml`, then `.env`, then the environment; one `Config` object, no globals |
+| `settings.py` | the dashboard's Settings API: which settings it may change, `local.toml` and `.env` storage, key handling, live re-application through `Router.reconfigure` |
 | `privacy.py` | redaction, hashing, previews, cloud-state preparation |
 | `gguf.py` | GGUF header reader: native context, layer count, chat template |
 | `registry.py` | the model registry, built from `Config\models.json` + GGUF + `config/models.toml` + measurements |

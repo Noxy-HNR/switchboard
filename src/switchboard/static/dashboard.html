@@ -410,6 +410,77 @@
   }
   .problems[hidden] { display: none; }
 
+  /* --- settings ------------------------------------------------------- */
+
+  button[aria-expanded="true"] { border-color: var(--blue); color: var(--blue); }
+  button.primary { border-color: #1d3b26; color: var(--green); }
+  button.primary:hover { border-color: var(--green); }
+  button.danger:hover { border-color: var(--red); color: var(--red); }
+  button:disabled { opacity: .45; cursor: default; }
+  button:disabled:hover { border-color: var(--line-2); color: var(--fg); }
+
+  #settings-wrap { padding: 14px 16px 0; max-width: 1800px; }
+  #settings-wrap[hidden] { display: none; }
+
+  .settings-intro {
+    font-size: 12px;
+    color: var(--fg-soft);
+    margin: 0 0 12px;
+  }
+  .settings-intro code { font-family: var(--mono); color: var(--fg); }
+
+  .settings-grid { display: grid; gap: 14px; grid-template-columns: 1fr; align-items: start; }
+  @media (min-width: 1100px) { .settings-grid { grid-template-columns: 1fr 1fr; } }
+
+  .setting-row {
+    display: grid;
+    grid-template-columns: minmax(140px, 210px) 1fr;
+    gap: 3px 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #1a212a;
+    align-items: center;
+  }
+  .setting-row:last-child { border-bottom: 0; }
+  .setting-label { font-weight: 600; color: var(--fg); }
+  .setting-row.dirty .setting-label::after { content: " \2022"; color: var(--amber); }
+  .setting-control { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+  .setting-help { grid-column: 2 / 3; font-size: 11px; color: var(--dim); }
+  @media (max-width: 560px) {
+    .setting-row { grid-template-columns: 1fr; }
+    .setting-help { grid-column: 1 / 2; }
+  }
+
+  input[type="text"], input[type="number"], input[type="password"], select {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg);
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-radius: 3px;
+    padding: 3px 6px;
+    min-width: 0;
+  }
+  input[type="number"] { width: 110px; }
+  input[type="password"], input.wide { width: 300px; max-width: 100%; }
+  input:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  input:disabled, select:disabled { opacity: .5; }
+  label.check { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 12px; }
+  .unit { color: var(--dim); font-size: 11px; font-family: var(--mono); }
+
+  .settings-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 12px;
+    border-top: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .msg { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .msg.ok   { color: var(--green); }
+  .msg.bad  { color: var(--red); }
+  .msg.warn { color: var(--amber); }
+
   @media (max-width: 560px) {
     .reason { max-width: 190px; }
     .fact .value { font-size: 13px; }
@@ -430,12 +501,32 @@
       <span id="updated">never updated</span>
       <button id="pause-btn" type="button" data-paused="false">Pause</button>
       <button id="refresh-btn" type="button">Refresh now</button>
+      <button id="settings-btn" type="button" aria-expanded="false" aria-controls="settings-wrap">Settings</button>
     </div>
   </div>
   <div class="facts" id="facts"></div>
 </header>
 
 <div id="banner" hidden></div>
+
+<div id="settings-wrap" hidden>
+  <p class="settings-intro">
+    Changes apply immediately, without a restart. Settings are saved to
+    <code id="settings-file">config/local.toml</code> and keys to
+    <code id="keys-file">.env</code>; both stay on this machine and out of git.
+    A key is never shown again once saved.
+  </p>
+  <section id="keys-section">
+    <h2>API keys <span class="hint">stored in .env, never sent back to this page</span></h2>
+    <div id="keys-body"></div>
+  </section>
+  <div id="settings-groups" class="settings-grid" style="margin-top: 14px;"></div>
+  <div class="settings-bar" style="margin-top: 14px; border: 1px solid var(--line); border-radius: 4px;">
+    <button id="settings-save" class="primary" type="button" disabled>Save changes</button>
+    <button id="settings-discard" type="button" disabled>Discard</button>
+    <span class="msg" id="settings-msg">no unsaved changes</span>
+  </div>
+</div>
 
 <main id="dashboard">
 
@@ -1230,9 +1321,333 @@
       : byId("updated").textContent;
   }
 
+  // --- settings ---------------------------------------------------------
+  // Read once when the panel opens, not on the refresh timer: a form that
+  // re-rendered every five seconds would throw away what is being typed.
+  // A key travels one way only, from its input to the server; the server
+  // answers with whether a key is set and its last four characters, never
+  // with the key, and the input is emptied the moment the key is sent.
+
+  var SETTINGS_API = "/settings";
+  var BACKEND_NAMES = ["jev", "local", "logit", "rules"];
+  var BACKEND_LABELS = {
+    jev: "Jev (cloud)", local: "Local adapter", logit: "Logit (experimental)", rules: "Rules (always last)"
+  };
+  var settingsState = { rows: [], controls: {}, keyMsgs: {}, open: false, busy: false };
+
+  function sendJSON(method, path, body) {
+    var options = { method: method, headers: { accept: "application/json" }, cache: "no-store" };
+    if (body !== undefined) {
+      options.headers["content-type"] = "application/json";
+      options.body = JSON.stringify(body);
+    }
+    return fetch(path, options).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (data) {
+        if (!response.ok) {
+          var detail = data && data.detail;
+          if (typeof detail !== "string") {
+            detail = detail ? JSON.stringify(detail) : "HTTP " + response.status;
+          }
+          throw new Error(detail);
+        }
+        return data;
+      });
+    });
+  }
+
+  function setMsg(node, text, kind) {
+    if (!node) { return; }
+    node.textContent = text;
+    node.className = "msg" + (kind ? " " + kind : "");
+  }
+
+  function asTristate(value) { return value === true ? "on" : value === false ? "off" : "auto"; }
+
+  function withRules(list) {
+    return BACKEND_NAMES.filter(function (name) { return name === "rules" || list.indexOf(name) !== -1; });
+  }
+
+  function controlFor(row) {
+    var pinned = Boolean(row.pinned_by);
+    var node;
+    if (row.kind === "backends") {
+      node = el("span", "setting-control");
+      var boxes = {};
+      BACKEND_NAMES.forEach(function (name) {
+        var label = el("label", "check");
+        var box = el("input");
+        box.type = "checkbox";
+        box.checked = name === "rules" || row.value.indexOf(name) !== -1;
+        box.disabled = pinned || name === "rules";
+        box.addEventListener("change", markDirty);
+        boxes[name] = box;
+        label.appendChild(box);
+        label.appendChild(document.createTextNode(BACKEND_LABELS[name]));
+        node.appendChild(label);
+      });
+      node.readValue = function () {
+        return BACKEND_NAMES.filter(function (name) { return boxes[name].checked; });
+      };
+      return node;
+    }
+    if (row.kind === "choice" || row.kind === "tristate") {
+      node = el("select");
+      row.choices.forEach(function (choice) {
+        var option = el("option", null, choice);
+        option.value = choice;
+        node.appendChild(option);
+      });
+      node.value = row.kind === "tristate" ? asTristate(row.value) : String(row.value);
+      node.readValue = function () { return node.value; };
+    } else if (row.kind === "bool") {
+      node = el("input");
+      node.type = "checkbox";
+      node.checked = Boolean(row.value);
+      node.readValue = function () { return node.checked; };
+    } else if (row.kind === "int" || row.kind === "float") {
+      node = el("input");
+      node.type = "number";
+      node.step = row.kind === "int" ? "1" : "any";
+      node.value = isNum(row.value) ? String(row.value) : "";
+      node.readValue = function () { return node.value === "" ? null : Number(node.value); };
+    } else {
+      node = el("input", "wide");
+      node.type = "text";
+      node.value = row.value === null || row.value === undefined ? "" : String(row.value);
+      node.readValue = function () { return node.value; };
+    }
+    node.disabled = pinned;
+    node.addEventListener("change", markDirty);
+    node.addEventListener("input", markDirty);
+    return node;
+  }
+
+  function currentValue(row) {
+    if (row.kind === "tristate") { return asTristate(row.value); }
+    if (row.kind === "backends") { return withRules(row.value); }
+    return row.value;
+  }
+
+  function changedValues() {
+    var changes = {};
+    settingsState.rows.forEach(function (row) {
+      var control = settingsState.controls[row.path];
+      if (!control || row.pinned_by) { return; }
+      var value = control.readValue();
+      if (JSON.stringify(value) !== JSON.stringify(currentValue(row))) { changes[row.path] = value; }
+    });
+    return changes;
+  }
+
+  function markDirty() {
+    var changes = changedValues();
+    var count = Object.keys(changes).length;
+    settingsState.rows.forEach(function (row) {
+      var control = settingsState.controls[row.path];
+      if (control && control.rowNode) {
+        control.rowNode.classList.toggle("dirty", Object.prototype.hasOwnProperty.call(changes, row.path));
+      }
+    });
+    byId("settings-save").disabled = count === 0 || settingsState.busy;
+    byId("settings-discard").disabled = count === 0 || settingsState.busy;
+    setMsg(byId("settings-msg"),
+      count ? count + " unsaved change" + (count === 1 ? "" : "s") : "no unsaved changes",
+      count ? "warn" : "");
+  }
+
+  function settingRow(row) {
+    var line = el("div", "setting-row");
+    line.appendChild(el("div", "setting-label", row.label));
+    var holder = el("div", "setting-control");
+    var control = controlFor(row);
+    control.rowNode = line;
+    settingsState.controls[row.path] = control;
+    holder.appendChild(control);
+    if (row.unit) { holder.appendChild(el("span", "unit", row.unit)); }
+    if (row.pinned_by) {
+      var pinned = el("span", "tag warn", "set by " + row.pinned_by);
+      pinned.title = "The environment wins over the dashboard; change it there.";
+      holder.appendChild(pinned);
+    } else if (row.saved) {
+      var saved = el("span", "tag info", "saved");
+      saved.title = "Overrides switchboard.toml, where it is " + JSON.stringify(row.file_value);
+      holder.appendChild(saved);
+      var reset = el("button", "danger", "Reset");
+      reset.type = "button";
+      reset.title = "Back to switchboard.toml's value: " + JSON.stringify(row.file_value);
+      reset.addEventListener("click", function () { resetSetting(row.path); });
+      holder.appendChild(reset);
+    }
+    line.appendChild(holder);
+    var help = el("div", "setting-help", row.help);
+    help.title = row.path;
+    line.appendChild(help);
+    return line;
+  }
+
+  function renderSettings(payload) {
+    settingsState.rows = payload.settings || [];
+    settingsState.controls = {};
+    if (payload.storage) {
+      byId("settings-file").textContent = payload.storage.settings_file;
+      byId("keys-file").textContent = payload.storage.keys_file;
+    }
+    var groups = byId("settings-groups");
+    clear(groups);
+    var sections = {};
+    settingsState.rows.forEach(function (row) {
+      if (!sections[row.section]) {
+        sections[row.section] = el("section");
+        sections[row.section].appendChild(el("h2", null, row.section));
+        groups.appendChild(sections[row.section]);
+      }
+      sections[row.section].appendChild(settingRow(row));
+    });
+    renderKeys(payload.keys || []);
+    markDirty();
+  }
+
+  function renderKeys(keys) {
+    var body = byId("keys-body");
+    clear(body);
+    settingsState.keyMsgs = {};
+    keys.forEach(function (key) { body.appendChild(keyRow(key)); });
+  }
+
+  function keyRow(key) {
+    var line = el("div", "setting-row");
+    line.appendChild(el("div", "setting-label", key.label));
+    var holder = el("div", "setting-control");
+    holder.appendChild(key.set
+      ? el("span", "tag ok", "set " + (key.hint || "") + (key.source ? " (" + key.source + ")" : ""))
+      : el("span", "tag quiet", "not set"));
+
+    var input = el("input");
+    input.type = "password";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = key.set ? "paste a new key to replace it" : "paste the key";
+    input.setAttribute("aria-label", key.label);
+    input.disabled = key.pinned;
+
+    var save = el("button", "primary", "Save key");
+    save.type = "button";
+    save.disabled = true;
+    var remove = el("button", "danger", "Remove");
+    remove.type = "button";
+    remove.disabled = key.source !== ".env";
+    var test = el("button", null, "Test");
+    test.type = "button";
+    test.disabled = !key.set;
+    var msg = el("span", "msg");
+    settingsState.keyMsgs[key.id] = msg;
+
+    input.addEventListener("input", function () { save.disabled = input.value.trim() === ""; });
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && !save.disabled) { save.click(); }
+    });
+    save.addEventListener("click", function () {
+      var value = input.value;
+      input.value = "";
+      save.disabled = true;
+      keyAction("PUT", key, { value: value }, "saved and in use");
+    });
+    remove.addEventListener("click", function () {
+      if (window.confirm("Remove the " + key.label + " from .env?")) { keyAction("DELETE", key, undefined, "removed"); }
+    });
+    test.addEventListener("click", function () {
+      setMsg(msg, "testing...", "");
+      sendJSON("POST", SETTINGS_API + "/keys/" + encodeURIComponent(key.id) + "/test", {})
+        .then(function (result) { setMsg(msg, result.detail || result.result, result.ok ? "ok" : "bad"); })
+        .catch(function (error) { setMsg(msg, error.message, "bad"); });
+    });
+
+    [input, save, remove, test, msg].forEach(function (node) { holder.appendChild(node); });
+    line.appendChild(holder);
+    line.appendChild(el("div", "setting-help",
+      "Used by " + key.used_by + ". " + key.help +
+      (key.pinned ? " Set in the environment (" + key.env + "), which wins over .env; change it there." : "")));
+    return line;
+  }
+
+  function keyAction(method, key, body, done) {
+    setMsg(settingsState.keyMsgs[key.id], "saving...", "");
+    sendJSON(method, SETTINGS_API + "/keys/" + encodeURIComponent(key.id), body)
+      .then(function (payload) {
+        renderKeys(payload.keys || []);
+        setMsg(settingsState.keyMsgs[key.id], done, "ok");
+        refresh();
+      })
+      .catch(function (error) { setMsg(settingsState.keyMsgs[key.id], error.message, "bad"); });
+  }
+
+  function saveSettings() {
+    var changes = changedValues();
+    var count = Object.keys(changes).length;
+    if (!count) { return; }
+    settingsState.busy = true;
+    markDirty();
+    setMsg(byId("settings-msg"), "saving...", "");
+    sendJSON("PUT", SETTINGS_API, { values: changes })
+      .then(function (payload) {
+        settingsState.busy = false;
+        renderSettings(payload);
+        setMsg(byId("settings-msg"), "saved " + count + " setting" + (count === 1 ? "" : "s") + ", applied now", "ok");
+        refresh();
+      })
+      .catch(function (error) {
+        settingsState.busy = false;
+        markDirty();
+        setMsg(byId("settings-msg"), "not saved: " + error.message, "bad");
+      });
+  }
+
+  function resetSetting(path) {
+    if (Object.keys(changedValues()).length && !window.confirm("Resetting reloads the form. Discard unsaved changes?")) {
+      return;
+    }
+    sendJSON("DELETE", SETTINGS_API + "/" + encodeURIComponent(path))
+      .then(function (payload) {
+        renderSettings(payload);
+        setMsg(byId("settings-msg"), "reset to switchboard.toml's value, applied now", "ok");
+        refresh();
+      })
+      .catch(function (error) { setMsg(byId("settings-msg"), "reset failed: " + error.message, "bad"); });
+  }
+
+  function loadSettings() {
+    setMsg(byId("settings-msg"), "loading...", "");
+    return getJSON(SETTINGS_API).then(renderSettings).catch(function (error) {
+      setMsg(byId("settings-msg"), "could not load settings: " + error.message, "bad");
+    });
+  }
+
+  function setSettingsOpen(open) {
+    settingsState.open = open;
+    byId("settings-wrap").hidden = !open;
+    byId("settings-btn").setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) {
+      loadSettings();
+      if (location.hash !== "#settings") { history.replaceState(null, "", "#settings"); }
+    } else if (location.hash === "#settings") {
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  }
+
+  byId("settings-btn").addEventListener("click", function () {
+    if (settingsState.open && Object.keys(changedValues()).length &&
+        !window.confirm("Close settings and discard unsaved changes?")) {
+      return;
+    }
+    setSettingsOpen(!settingsState.open);
+  });
+  byId("settings-save").addEventListener("click", saveSettings);
+  byId("settings-discard").addEventListener("click", function () { loadSettings(); });
+
   byId("pause-btn").addEventListener("click", function () { setPaused(!state.paused); });
   byId("refresh-btn").addEventListener("click", function () { refresh(); });
 
+  if (location.hash === "#settings") { setSettingsOpen(true); }
   schedule();
   refresh();
 })();

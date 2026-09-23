@@ -118,6 +118,20 @@ accuracy, set `privacy.allow_cloud = false` and the machine stays closed.
 
 ## What is kept on this machine
 
+**Keys** live in `.env` in the project root (git-ignored), written there by the
+dashboard's Settings page or by hand. The settings API never returns a key: it
+reports whether one is set, whether it came from `.env` or the process
+environment, and its last four characters. The page takes a key in a password
+field and empties it the moment it is sent. A key never goes into
+`config/local.toml`, the database or a log. The **Test** button sends TypeSafe
+one fixed synthetic sentence, never a real request, and is refused while cloud
+decisions are turned off. The Settings API sits behind the same localhost
+boundary as everything else (below), so a web page cannot write a key or a
+setting.
+
+**Settings** saved from the dashboard live in `config/local.toml`
+(git-ignored).
+
 The SQLite database at `data/switchboard.sqlite3`. Its rules are enforced in
 code, not by convention:
 
@@ -193,8 +207,9 @@ never transmits it: `doctor` reads the file only to check that Switchboard's
 own URL is in it, and the redaction rules would strip a `bu_…` token from
 anything outbound. But `integrate-cptr.ps1` copies the whole file, key
 included, to `backups\cptr-config.toml.<timestamp>.bak` (git-ignored) before it
-edits the config, so that backup holds the same plaintext key and deserves the
-same care as the original.
+edits the config, so such a backup holds the same plaintext key. The one taken
+on 2026-09-21 was moved to the Recycle Bin on 2026-09-23; running the script
+again would take a new one.
 
 ## The upstream's own exposure
 

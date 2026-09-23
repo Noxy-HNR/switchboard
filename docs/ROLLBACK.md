@@ -8,7 +8,7 @@ machine behaves exactly as it did before.
 
 | File | Change | Backup |
 | --- | --- | --- |
-| `~/.cptr/config.toml` | Added a "Switchboard" chat connection and a "switchboard" MCP tool server. Existing entries untouched. | `backups/cptr-config.toml.20260921-151843.bak` |
+| `~/.cptr/config.toml` | Added a "Switchboard" chat connection and a "switchboard" MCP tool server. Existing entries untouched. | `backups/cptr-config.toml.20260921-151843.bak`, moved to the Recycle Bin on 2026-09-23 because it held cptr's plaintext Browser Use key; `integrate-cptr.ps1 -Remove` undoes the edit without it |
 | `C:\AI\start.ps1` | Added a marker-bracketed block that starts Switchboard before the final health check. | `backups/start.ps1.20260921-101859.bak` |
 | `C:\AI\Config\models.json` | `activeModel` changed from `medgemma-27b-it-Q4_K_M.gguf` to `Qwen3.5-9B-UD-Q6_K_XL.gguf`, by the dashboard, when a model was loaded. | `backups/models.json.20260921-150256.premanual.bak` (before any change), then `backups/models.json.<stamp>.bak`, one per Switchboard process, taken before that process's first switch |
 
@@ -39,7 +39,7 @@ cd C:\AI\Switchboard
 .\scripts\integrate-cptr.ps1 -Remove      # stop cptr first
 ```
 
-Or restore the backup wholesale:
+Or, if you restore the backup from the Recycle Bin first, put it back wholesale:
 
 ```powershell
 Copy-Item C:\AI\Switchboard\backups\cptr-config.toml.<stamp>.bak $HOME\.cptr\config.toml -Force

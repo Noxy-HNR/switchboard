@@ -43,11 +43,17 @@ What happened after the 2026-09-21 baseline (351 tests):
    local judgment on tasks (0.681, vs logit 0.426 and rules 0.532), so the chain
    stays `jev -> local -> rules` and logit stays off.
 
+6. **Housekeeping and a Settings page** (2026-09-23): the cptr config backup
+   (it held a plaintext key) went to the Recycle Bin; the stale
+   `Qwen3.5-9B-Q4_K_M.gguf` entry left `C:\AI\Config\models.json` (backed up
+   first); the workspace integration edits were committed on the
+   `switchboard-integration` branch of the `C:\AI` repo; the stack was
+   restarted through `C:\AI\start.ps1` so it no longer depends on a tool
+   session. The dashboard gained a Settings panel: live settings saved to
+   `config/local.toml`, keys saved to `.env` and never returned.
+
 Open, and not Switchboard's to decide:
 
-- A TypeSafe API key, to live-test Jev (status BLOCKED_EXTERNAL).
-- The three uncommitted integration edits in the `C:\AI` workspace repo.
-- The stale `Qwen3.5-9B-Q4_K_M.gguf` entry in `C:\AI\Config\models.json`,
-  which points at a file that does not exist.
-- `backups/cptr-config.toml.*.bak` holds a copy of cptr's plaintext Browser Use
-  key (git-ignored; see [PRIVACY.md](PRIVACY.md)).
+- A TypeSafe API key, to live-test Jev (status BLOCKED_EXTERNAL). It can now be
+  entered and tested on the dashboard's Settings panel.
+- Merging (or pushing) the `switchboard-integration` branch of the `C:\AI` repo.

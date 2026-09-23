@@ -31,6 +31,7 @@ from switchboard.executor import build_executor
 from switchboard.proxy import build_proxy_router
 from switchboard.router import Router
 from switchboard.security import LocalBoundary
+from switchboard.settings import build_settings_router
 from switchboard.store import Store
 from switchboard.upstream import LlamaClient
 
@@ -89,7 +90,9 @@ def create_app(config: Config | None = None) -> FastAPI:
             else:
                 yield
         finally:
-            await chain.aclose()
+            # The dashboard may have swapped the chain since start-up.
+            await router.aclose_retired()
+            await router.chain.aclose()
             close = getattr(executor, "aclose", None)
             if close is not None:
                 await close()
@@ -114,6 +117,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.include_router(proxy, prefix="/v1", tags=["openai"])
     app.include_router(proxy, tags=["openai (no /v1 prefix)"])
     app.include_router(build_api_router(get_router), tags=["switchboard"])
+    app.include_router(build_settings_router(get_router), tags=["settings"])
 
     @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
     async def dashboard() -> HTMLResponse:
@@ -122,11 +126,13 @@ def create_app(config: Config | None = None) -> FastAPI:
         return HTMLResponse(DASHBOARD_FILE.read_text(encoding="utf-8"))
 
     @app.get("/", include_in_schema=False)
-    async def index() -> JSONResponse:
+    async def index(request: Request) -> JSONResponse:
+        # Settings saved from the dashboard replace app.state.config.
+        config_now: Config = getattr(request.app.state, "config", None) or config
         return JSONResponse(
             {
                 "service": "switchboard",
-                "mode": config.routing.mode,
+                "mode": config_now.routing.mode,
                 "openai_base_url": f"{config.base_url}/v1",
                 "virtual_models": ["switchboard-auto", "switchboard-fast", "switchboard-deep", "switchboard-medical"],
                 "docs": f"{config.base_url}/docs",

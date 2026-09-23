@@ -107,10 +107,29 @@ Capability priors live in `config/models.toml` and are meant to be edited.
 Speeds and load times are measured from real traffic and stored in SQLite; a
 seeded estimate is replaced the first time the real thing is observed.
 
+## Settings and keys
+
+Open the dashboard and click **Settings** (or go to
+`http://127.0.0.1:8002/dashboard#settings`). Everything there applies at once,
+without a restart:
+
+* **API keys** - paste a key, save, then **Test** it. Keys are written to
+  `.env` in this folder and never shown again; the page only says whether one
+  is set and its last four characters.
+* **Routing, switch guards, policy, decisions, privacy** - the settings worth
+  changing day to day. They are saved to `config/local.toml`, layered over
+  `config/switchboard.toml`; **Reset** next to a setting (or deleting
+  `local.toml`) goes back to the file's value.
+
+Both files are git-ignored. A setting or key that the environment sets is
+shown as locked, because the environment wins over both files.
+
 ## Configuration
 
-`config/switchboard.toml`, commented throughout. Anything there can be
-overridden by `SWITCHBOARD_<SECTION>__<KEY>` in the environment or `.env`.
+`config/switchboard.toml`, commented throughout, holds the defaults and
+everything the dashboard does not change (ports, paths, addresses). Values are
+read in this order, later ones winning: `switchboard.toml`, `local.toml`,
+`.env`, then `SWITCHBOARD_<SECTION>__<KEY>` environment variables.
 
 The two settings most worth knowing:
 
@@ -122,8 +141,8 @@ mode = "active"    # "shadow" = never switch, just record what it would have don
 value_of_quality_s = 400.0   # how many seconds of waiting a better answer is worth
 ```
 
-`TYPESAFE_API_KEY` in `.env` enables the Jev backend. Without it, everything
-stays on this machine.
+A TypeSafe key (saved in Settings, or `TYPESAFE_API_KEY` in `.env`) enables
+the Jev backend. Without it, everything stays on this machine.
 
 ## Documentation
 

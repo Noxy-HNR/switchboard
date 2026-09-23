@@ -1,8 +1,9 @@
 """Configuration loading.
 
-Values come from three places, later ones winning: ``config/switchboard.toml``,
-a ``.env`` file next to it, and the process environment. Environment overrides
-are named ``SWITCHBOARD_<SECTION>__<KEY>``.
+Values come from four places, later ones winning: ``config/switchboard.toml``
+(the commented defaults), ``config/local.toml`` (what the dashboard's settings
+page saved; git-ignored), a ``.env`` file in the project root, and the process
+environment. Environment overrides are named ``SWITCHBOARD_<SECTION>__<KEY>``.
 
 Invalid configuration fails here, at load time, rather than as strange
 behaviour later: a mistyped key, a port out of range, an unknown decision
@@ -30,6 +31,9 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "switchboard.toml"
 DEFAULT_MODELS_PATH = PROJECT_ROOT / "config" / "models.toml"
 
 ENV_PREFIX = "SWITCHBOARD_"
+
+# Written by the dashboard's settings page, next to the main config file.
+LOCAL_SETTINGS_NAME = "local.toml"
 
 # Every decision backend Switchboard ships. The factory builds from this list,
 # so a name that is not here cannot be configured by accident.
@@ -294,16 +298,40 @@ def _apply_env_overrides(data: dict[str, Any], environ: dict[str, str]) -> list[
     return applied
 
 
+def local_settings_path(config_path: Path) -> Path:
+    return config_path.parent / LOCAL_SETTINGS_NAME
+
+
+def dotenv_path(config_path: Path) -> Path:
+    return config_path.parent.parent / ".env"
+
+
+def read_toml(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    return tomllib.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def merge_settings(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """`overlay` on top of `base`, table by table; neither input is modified."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        existing = merged.get(key)
+        if isinstance(value, dict) and isinstance(existing, dict):
+            merged[key] = merge_settings(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(path: Path | None = None, environ: dict[str, str] | None = None) -> Config:
-    """Load configuration from TOML plus .env plus the environment."""
+    """Load configuration from TOML, the dashboard's saved settings, .env and the environment."""
     config_path = path or DEFAULT_CONFIG_PATH
-    data: dict[str, Any] = {}
-    if config_path.is_file():
-        data = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
+    data = merge_settings(read_toml(config_path), read_toml(local_settings_path(config_path)))
 
     env = dict(environ if environ is not None else os.environ)
-    # A .env sitting next to the config supplies anything the environment lacks.
-    for key, value in load_dotenv(config_path.parent.parent / ".env").items():
+    # A .env in the project root supplies anything the environment lacks.
+    for key, value in load_dotenv(dotenv_path(config_path)).items():
         env.setdefault(key, value)
 
     _apply_env_overrides(data, env)

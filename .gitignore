@@ -20,3 +20,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+
+# Settings saved from the dashboard (layered over config/switchboard.toml)
+config/local.toml
+config/local.toml.tmp
+.env.tmp

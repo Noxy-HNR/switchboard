@@ -218,6 +218,50 @@ class Router:
         self._snapshot: RegistrySnapshot | None = None
         self._snapshot_signature: tuple[float, int] | None = None
         self._started = time.monotonic()
+        # Chains replaced by `reconfigure`, each with the timer that closes it
+        # once decisions already running on it have had time to finish.
+        self._retired: dict[asyncio.Task[None], DecisionChain] = {}
+
+    # --- live configuration ---------------------------------------------
+
+    def reconfigure(self, config: Config, chain: DecisionChain) -> None:
+        """Adopt new settings without a restart.
+
+        Everything a request reads - the config, the policy built from it and
+        the decision chain - is swapped at once, so a request sees either the
+        old settings or the new ones, never a mix. The old chain is not closed
+        on the spot: a decision already running on it would lose its HTTP client
+        mid-request. It is closed after the decision budget has passed instead.
+        Settings the upstream client and the executor read (addresses, paths)
+        are not live; they need a restart.
+        """
+        old_chain = self._chain
+        self._config = config
+        self._policy = RoutingPolicy(config)
+        self._chain = chain
+        if self._store is not None:
+            self._store.preview_chars = max(1, min(config.privacy.preview_chars, 200))
+        if old_chain is not chain:
+            grace_s = config.decisions.budget_ms / 1000.0 + 1.0
+            task = asyncio.ensure_future(self._close_later(old_chain, grace_s))
+            self._retired[task] = old_chain
+            task.add_done_callback(lambda done: self._retired.pop(done, None))
+
+    @staticmethod
+    async def _close_later(chain: DecisionChain, delay_s: float) -> None:
+        await asyncio.sleep(delay_s)
+        await chain.aclose()
+
+    async def aclose_retired(self) -> None:
+        """Close replaced chains now instead of waiting out their grace; for shutdown."""
+        pending = list(self._retired.items())
+        self._retired.clear()
+        for task, chain in pending:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+            with contextlib.suppress(Exception):
+                await chain.aclose()
 
     # --- registry -------------------------------------------------------
 
