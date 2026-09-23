@@ -127,7 +127,10 @@ field and empties it the moment it is sent. A key never goes into
 one fixed synthetic sentence, never a real request, and is refused while cloud
 decisions are turned off. The Settings API sits behind the same localhost
 boundary as everything else (below), so a web page cannot write a key or a
-setting.
+setting. Lecture Notes (`C:\AI\Projects\lecture-notes`) reads the TypeSafe key
+from this same file for its own Jev features (exam hints and search ranking);
+what it sends is described in its README, under "Jev", and its calls are not
+counted in the usage line on the key's row.
 
 **Settings** saved from the dashboard live in `config/local.toml`
 (git-ignored).

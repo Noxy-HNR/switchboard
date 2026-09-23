@@ -262,9 +262,11 @@ KEYS: tuple[KeySpec, ...] = (
         "typesafe",
         "TYPESAFE_API_KEY",
         "TypeSafe API key",
-        "Jev, the cloud decision backend",
+        "Jev, the cloud decision backend; also Lecture Notes",
         "Turns on Jev when the Jev setting is auto and cloud decisions are allowed. "
-        "Test sends one short synthetic sentence to TypeSafe, never your requests.",
+        "Test sends one short synthetic sentence to TypeSafe, never your requests. "
+        "Lecture Notes reads this key too, for exam hints and search ranking; its use and "
+        "cost are on its own Diagnostics page, not in the line below.",
     ),
 )
 
