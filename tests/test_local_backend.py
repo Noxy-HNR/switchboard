@@ -365,12 +365,13 @@ async def test_step_state_is_the_shared_state() -> None:
 
     assert state == {
         "task": {"goal": "get the integration suite green"},
-        "step": {"action": "uv run pytest", "result": "1 failed", "attempt": 2, "exit_code": 1},
+        # No attempt count: no question names it (the router reads it directly).
+        "step": {"action": "uv run pytest", "result": "1 failed", "exit_code": 1},
         "earlier_attempts": ["uv run pytest -x"],
     }
 
 
-async def test_a_reply_cut_off_at_max_tokens_is_refused_without_blaming_the_server() -> None:
+async def test_a_reply_cut_off_at_max_tokens_is_refused_and_not_retried() -> None:
     reply = llama_reply(DISCRETE_TASK_ANSWERS)
     reply["choices"][0]["finish_reason"] = "length"
     recorder = replying(reply)
@@ -378,10 +379,23 @@ async def test_a_reply_cut_off_at_max_tokens_is_refused_without_blaming_the_serv
         with pytest.raises(BackendError) as caught:
             await backend.decide_task(TaskContext(message="hello"), READY)
 
-    # The same max_tokens would cut it off again: not retried, not an outage.
+    # The same max_tokens would cut it off again: not retried, and reported as
+    # the unusable answer it is; repeated, it parks the backend like any failure.
     assert caught.value.kind == "invalid"
     assert caught.value.retryable is False
+    assert caught.value.counts_against_health is True
     assert len(recorder.requests) == 1
+
+
+async def test_an_empty_reply_that_ran_out_of_tokens_is_reported_as_cut_off() -> None:
+    reply = llama_reply(DISCRETE_TASK_ANSWERS)
+    reply["choices"][0]["finish_reason"] = "length"
+    reply["choices"][0]["message"]["content"] = ""
+    async with backend_for(replying(reply)) as backend:
+        with pytest.raises(BackendError) as caught:
+            await backend.decide_task(TaskContext(message="hello"), READY)
+
+    assert caught.value.kind == "invalid"
 
 
 async def test_unreported_token_counts_are_left_out_not_recorded_as_zero() -> None:

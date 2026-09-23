@@ -545,14 +545,22 @@ class Router:
         coming up with a different model. So the external action is shielded,
         the lock stays held until it finishes, and only then is the cancellation
         passed on.
+
+        Shielded for as long as it runs, not just once: anyio re-delivers a
+        cancellation on every loop pass while a streaming response waits, and an
+        unshielded wait after the first one would cancel the executor itself.
         """
         task = asyncio.ensure_future(self._executor.switch(target, from_model=from_model))
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            with contextlib.suppress(Exception):
-                # The switch happened even though nobody is waiting for it.
-                self._record_switch(await task, trigger=trigger)
+            while not task.done():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(task)
+            if not task.cancelled() and task.exception() is None:
+                with contextlib.suppress(Exception):
+                    # The switch happened even though nobody is waiting for it.
+                    self._record_switch(task.result(), trigger=trigger)
             raise
 
     # --- step supervision -----------------------------------------------

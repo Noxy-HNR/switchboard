@@ -280,13 +280,15 @@ class RoutingPolicy:
         self,
         model: ModelEntry,
         request: RouteRequest,
-        decision: TaskDecision,
+        difficulty: float,
         memory: MemoryStatus,
         resident: ModelEntry | None,
         candidate: Candidate,
     ) -> None:
+        # The same floored difficulty scoring uses, so a model is never judged
+        # to fit an answer shorter than the one the policy then plans for.
         required = request.estimated_prompt_tokens + self.expected_output_tokens(
-            decision.difficulty, request.max_tokens
+            difficulty, request.max_tokens
         )
         limit = model.context_limit
         if limit is not None and required > limit:
@@ -335,7 +337,7 @@ class RoutingPolicy:
         value_of_quality_s: float,
     ) -> Candidate:
         candidate = Candidate(model=model, resident=bool(resident and resident.id == model.id))
-        self._check_feasible(model, request, decision, memory, resident, candidate)
+        self._check_feasible(model, request, estimate.difficulty, memory, resident, candidate)
 
         # Answer length stays on the point difficulty: the token table is a
         # rough per-level guess, and averaging guesses buys no accuracy.
@@ -680,10 +682,6 @@ class RoutingPolicy:
         )
 
 
-# Both numbers are printed to one decimal, so a gap smaller than that reads as "at".
-_CEILING_TOLERANCE = 0.05
-
-
 def _against_ceiling(difficulty: float, ceiling: float) -> str:
     """How a difficulty sits against a ceiling, in words that match the printed numbers.
 
@@ -692,10 +690,14 @@ def _against_ceiling(difficulty: float, ceiling: float) -> str:
     (the quality curve is steep there), and staying can be right for one above
     it when nothing better is worth loading. The reason states the relationship
     as it is rather than the one that would explain the choice by itself.
+
+    Both numbers appear in the sentence to one decimal, so they are compared as
+    printed: 1.85 against 1.8 prints as "1.9 is above 1.8", never "sits at".
     """
-    if difficulty > ceiling + _CEILING_TOLERANCE:
+    shown_difficulty, shown_ceiling = float(f"{difficulty:.1f}"), float(f"{ceiling:.1f}")
+    if shown_difficulty > shown_ceiling:
         return "is above"
-    if difficulty >= ceiling - _CEILING_TOLERANCE:
+    if shown_difficulty == shown_ceiling:
         return "sits at"
     return "sits within"
 

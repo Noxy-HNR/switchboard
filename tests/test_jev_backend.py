@@ -327,7 +327,6 @@ async def test_decide_step_parses_a_full_answer() -> None:
             "action": "uv run pytest -q",
             "result": "2 failed, 18 passed",
             "exit_code": 1,
-            "attempt": 2,
         },
         "earlier_attempts": ["ran pytest without installing deps"],
     }

@@ -302,16 +302,19 @@ def _provider_result(payload: Any) -> ProviderResult:
         raise TypeSafeError("llama-server returned no choices")
     message = choices[0].get("message") if isinstance(choices[0], dict) else None
     content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, str) or not content.strip():
-        raise TypeSafeError("llama-server returned an empty message content")
     # A reply cut off at max_tokens is incomplete JSON at best and a partial
     # answer set at worst, as the adapter's own OpenAI provider also refuses.
-    # It is a response we cannot trust, not an outage: the same max_tokens would
-    # cut it off again, so it must neither be retried nor trip the breaker.
+    # Checked first, so an empty reply that ran out of tokens is reported as the
+    # cut-off it is. It is an answer we cannot use rather than an outage, and
+    # the same max_tokens would cut it off again, so it is not retried; like any
+    # unusable answer it counts toward the breaker, which parks a backend that
+    # keeps failing the same way instead of spending every request's budget on it.
     if isinstance(choices[0], dict) and choices[0].get("finish_reason") == "length":
         raise TypeSafeAPIResponseValidationError(
             200, {"finish_reason": "length"}, httpx2.Headers(), "choices[0].finish_reason"
         )
+    if not isinstance(content, str) or not content.strip():
+        raise TypeSafeError("llama-server returned an empty message content")
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
 
     def count(key: str) -> int | None:
@@ -564,11 +567,14 @@ def _as_outcome(value: str) -> StepOutcome:
 
 
 def _backend_error(error: Exception) -> BackendError:
-    """Classify a provider failure so the breaker punishes only real outages.
+    """Classify a provider failure for the attempt log and the breaker.
 
-    A refusal we caused (a malformed request, a 404 path) must not count against
-    llama-server's health, and a timeout must, because it means the machine is
-    too busy to help right now.
+    Every kind except `auth` and `skipped` counts toward the breaker
+    (`BackendError.counts_against_health`): a timeout because the machine is too
+    busy to help right now, and an `invalid` answer (a malformed request, a 404
+    path, a cut-off reply) because a backend that keeps failing the same way is
+    not worth each request's budget. Only a refusal to run at all (`skipped`)
+    leaves the breaker alone.
     """
     kind: str
     retryable = True

@@ -72,10 +72,11 @@ def build_step_state(context: StepContext, clean: Clean, budget: int) -> dict[st
     spent = len(goal) + len(action) + sum(len(item) for item in attempts)
     # The result keeps an empty string when it really is empty: "the result is
     # empty" is itself evidence, and the `unclear` outcome describes it.
+    # No `attempt`: no question names the retry count, and the recommendation
+    # reads it from the context directly (three failures escalate in code).
     step: dict[str, Any] = {
         "action": action,
         "result": clean(context.result, max(0, budget - spent)),
-        "attempt": context.attempt,
     }
     if context.exit_code is not None:
         step["exit_code"] = context.exit_code

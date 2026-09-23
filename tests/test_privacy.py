@@ -501,3 +501,88 @@ def test_a_token_count_followed_by_punctuation_is_still_a_count(text: str) -> No
 
 def test_a_long_digit_token_followed_by_a_brace_stays_redacted() -> None:
     assert "credential" in redact('{"token": 12345678901234567890}').kinds
+
+
+# --- found by the adversarial review -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["my otp token: 482913", '{"reset_token": "12345678"}', "session_token: 99887766", "sms_token: 4829", "token=1234"],
+)
+def test_short_numeric_codes_under_a_singular_token_name_stay_redacted(text: str) -> None:
+    """One-time and verification codes are 4-8 digits; only plural `tokens` counts are exempt."""
+    assert "credential" in redact(text).kinds
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        ("DB_PASS=hunter2hunter2", "hunter2hunter2"),
+        ("export MYSQL_PWD=s3cretvalue", "s3cretvalue"),
+        ('{"pass": "letmein99"}', "letmein99"),
+        ("smtp.pass: mailpass42", "mailpass42"),
+    ],
+)
+def test_pass_and_pwd_names_are_credentials(text: str, secret: str) -> None:
+    cloud, _ = prepare_cloud_text(text, max_chars=1500)
+    assert secret not in cloud
+
+
+@pytest.mark.parametrize("text", ["bypass: true", "passport: required", "compass=north"])
+def test_words_that_merely_contain_pass_are_not_credentials(text: str) -> None:
+    assert redact(text).text == text
+
+
+@pytest.mark.parametrize(
+    ("text", "placeholder"),
+    [
+        ("~~~\nx = 1\n~~~", "[pasted code block omitted: 1 line]"),
+        ("~~~python\nx = 1\ny = 2\n~~~", "[pasted python code block omitted: 2 lines]"),
+    ],
+    ids=["tilde", "tilde-language"],
+)
+def test_tilde_fences_are_code_blocks(text: str, placeholder: str) -> None:
+    assert minimize_for_cloud(text)[0] == placeholder
+
+
+@pytest.mark.parametrize("text", ["~~~\n```\nx = 1\n```\n~~~", "```\n~~~\nx = 1\n~~~\n```"])
+def test_nested_fences_collapse_to_one_placeholder(text: str) -> None:
+    minimized, kept = minimize_for_cloud(text)
+    assert "x = 1" not in minimized
+    assert PLACEHOLDER.fullmatch(minimized) and kept == ["code block"]
+
+
+def test_a_powershell_underline_is_not_a_tilde_fence() -> None:
+    """PowerShell underlines an error with "+ ~~~~"; read as a fence it swallowed
+    everything after it, the user's question included."""
+    minimized, _ = minimize_for_cloud(f"Why does this fail?\n{POWERSHELL_ERROR}\nWhat should I do?")
+    assert minimized.endswith("What should I do?")
+    assert "Cannot find path" not in minimized
+
+
+def test_a_zsh_prompt_makes_its_paragraph_output() -> None:
+    text = "Why is this empty?\n\nbraxt@MBP ~ % cat ~/.ssh/config\nHost box\n  User me"
+    minimized, kept = minimize_for_cloud(text)
+    assert "ssh/config" not in minimized and "User me" not in minimized
+    assert "terminal output" in kept
+    assert minimized.startswith("Why is this empty?")
+
+
+def test_an_email_then_a_percent_in_prose_is_not_a_prompt() -> None:
+    text = "Ask sam@example.com about 50% of the budget please."
+    assert minimize_for_cloud(text) == (text, [])
+
+
+def test_json_too_deep_to_parse_is_withheld_not_raised() -> None:
+    assert minimize_for_cloud("[" * 100_000 + "]" * 100_000)[1] == ["JSON document"]
+
+
+def test_a_jwt_run_is_redacted_in_linear_time() -> None:
+    import time
+
+    started = time.perf_counter()
+    redact("eyJ-" * 100_000)
+    assert time.perf_counter() - started < 2.0
+    token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+    assert token not in redact(f"Bearer-less JWT: {token}").text

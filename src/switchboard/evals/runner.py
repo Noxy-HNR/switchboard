@@ -92,6 +92,10 @@ class FixtureResult:
     latency_ms: float = 0.0
     backend: str = ""
     error: str | None = None
+    # The decision itself, for the switching simulation. `observed` is rounded
+    # for the report and drops the distributions a calibrated backend returns,
+    # so rebuilding from it would simulate a policy production never runs.
+    decision: TaskDecision | None = None
 
     @property
     def scored_checks(self) -> dict[str, bool]:
@@ -259,6 +263,7 @@ async def evaluate_backend(
                     latency_ms=elapsed,
                     backend=decision.backend,
                     error=error,
+                    decision=decision,
                 )
             )
             _accumulate(task_report, decision, config)
@@ -474,12 +479,9 @@ async def run_eval(
 
         if task_report.results and not task_report.unavailable:
             decisions = [
-                (
-                    fixture,
-                    _decision_from_observed(result),
-                )
+                (fixture, result.decision)
                 for fixture, result in zip(task_fixtures, task_report.results, strict=True)
-                if result.error is None
+                if result.error is None and result.decision is not None
             ]
             simulations[name] = simulate_switching(
                 config, snapshot, decisions, HostFacts().memory()
@@ -503,18 +505,6 @@ async def run_eval(
         "backends": reports,
         "switching": simulations,
     }
-
-
-def _decision_from_observed(result: FixtureResult) -> TaskDecision:
-    """Rebuild a decision from a fixture result, for the switching simulation."""
-    observed = result.observed
-    return TaskDecision(
-        domain=observed.get("domain", "general"),
-        difficulty=float(observed.get("difficulty", 1.0)),
-        tool_need=float(observed.get("tool_need", 0.0)),
-        ambiguity=float(observed.get("ambiguity", 0.0)),
-        backend=result.backend,
-    )
 
 
 def render_markdown(report: dict[str, Any]) -> str:

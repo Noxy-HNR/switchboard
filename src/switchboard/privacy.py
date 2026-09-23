@@ -42,7 +42,9 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     ("auth-header", re.compile(r'''(?im)\b(?:authorization|proxy-authorization|cookie|set-cookie)["']?\s*:\s*[^\r\n]+''')),
     ("bearer", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-~+/]{12,}=*")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
+    # From the start of a base64url run: "-" is in the run, so a word boundary
+    # alone let every "eyJ" in "eyJ-eyJ-..." rescan the rest of it.
+    ("jwt", re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}+\.[A-Za-z0-9_-]{8,}+\.[A-Za-z0-9_-]{8,}")),
     ("openai-key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")),
     ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}")),
     ("github-token", re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})")),
@@ -65,7 +67,9 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             r"(?i)(?<![a-z0-9_.-])"
             r"(?=[a-z0-9_.-]*?(?:api[_-]?key|secret|passwd|password|token|access[_-]?key"
-            r"|client[_-]?secret|private[_-]?key))"
+            r"|client[_-]?secret|private[_-]?key"
+            # PASS and PWD only as a whole segment, so "bypass" and "passport" are not names.
+            r"|(?<![a-z0-9])(?:pass|pwd)(?![a-z0-9])))"
             r"([a-z0-9_.-]++)[\"']?\s*[:=]\s*(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
         ),
     ),
@@ -86,11 +90,12 @@ _ENV_LINE = re.compile(
     r"(?im)^[ \t]*+(?:export[ \t]++)?([A-Z][A-Z0-9_]{2,}+)[ \t]*+=[ \t]*+(\S.*)$",
 )
 _ENV_SENSITIVE = re.compile(
-    r"(?i)(key|secret|token|password|passwd|credential|auth|private|session|cookie)"
+    r"(?i)(key|secret|token|password|passwd|credential|auth|private|session|cookie"
+    r"|(?<![a-z0-9])(?:pass|pwd)(?![a-z0-9]))"
 )
 
 
-_STRONG_CREDENTIAL_WORDS = ("key", "secret", "passw", "private", "auth")
+_STRONG_CREDENTIAL_WORDS = ("key", "secret", "pass", "pwd", "private", "auth")
 # Up to nine digits, optionally quoted, then only closing punctuation.
 _COUNT_VALUE = re.compile(r"[\"']?\d{1,9}[\"']?[)\]}.!?]*")
 
@@ -98,12 +103,14 @@ _COUNT_VALUE = re.compile(r"[\"']?\d{1,9}[\"']?[)\]}.!?]*")
 def _is_token_count(name: str, value: str) -> bool:
     """`max_tokens: 256` and `"prompt_tokens": 21` are counts, not credentials.
 
-    Only a name whose one credential word is "token" qualifies, and only with a
-    short all-digit value: no real token is nine digits or fewer. A name that
-    also says key, secret, password, private or auth keeps every value redacted.
+    Only a count-shaped name qualifies - the plural "tokens" - and only with a
+    short all-digit value. A singular token name is a credential whatever its
+    length: one-time, reset, session and SMS codes are four to eight digits. A
+    name that also says key, secret, pass, pwd, private or auth keeps every value
+    redacted.
     """
     lowered = name.lower()
-    if "token" not in lowered or any(word in lowered for word in _STRONG_CREDENTIAL_WORDS):
+    if "tokens" not in lowered or any(word in lowered for word in _STRONG_CREDENTIAL_WORDS):
         return False
     # The value runs to the next space, comma or semicolon, so it can carry the
     # closer of the JSON or sentence around it: `37}` or `160).`.
@@ -233,6 +240,13 @@ def truncate_middle(text: str, limit: int) -> str:
 # The info string after the opening fence stops at a closing fence, so a
 # one-line ```span``` ends where it closes instead of taking the rest of the text.
 _FENCE = re.compile(r"```[ \t]*([\w+#.-]*)(?:(?!```)[^\n])*\n?(.*?)(?:```|\Z)", re.DOTALL)
+# A tilde fence opens only at the start of a line (CommonMark allows up to three
+# spaces of indent) and closes on a tilde line at least as long. Anchoring
+# matters: PowerShell underlines an error with "+ ~~~~", which is not a fence.
+_TILDE_FENCE = re.compile(
+    r"^[ ]{0,3}(~{3,})[ \t]*([\w+#.-]*)[^\n]*\n(.*?)(?:^[ ]{0,3}\1~*[ \t]*$|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
 # Fence info strings that may appear in a placeholder: the kind of code is a
 # useful routing signal, and a name on this list cannot carry anything private.
 _FENCE_LANGUAGES = frozenset(
@@ -263,6 +277,7 @@ _PROMPT_LINE = re.compile(
       | [A-Za-z]:\\(?:[^>\n]*[^\s>=-])?>       # cmd: C:\AI>
       | \$\ [^\s\d]                            # POSIX: $ ls
       | [\w.-]+@[\w.-]+:[^\s$#]*[$#]\ \S       # POSIX: sam@box:~/app$ ls
+      | [\w.-]+@[\w.-]+\ [^\s%#]+\ [%#]\ \S       # zsh: sam@box ~ % ls
     )""",
     re.VERBOSE,
 )
@@ -575,6 +590,10 @@ def _structured_document(text: str) -> str | None:
     if stripped[:1] in "{[" and stripped[-1:] in "}]":
         try:
             json.loads(stripped)
+        except RecursionError:
+            # Too deeply nested to parse is still a document: withhold it rather
+            # than let the error escape the minimizer.
+            return "JSON document"
         except ValueError:
             return None
         return "JSON document"
@@ -611,11 +630,17 @@ def minimize_for_cloud(text: str) -> tuple[str, list[str]]:
         label = f"{language} code block" if language in _FENCE_LANGUAGES else "code block"
         return _placeholder(label, match.group(2).rstrip("\n"))
 
+    def tilde_fence(match: re.Match[str]) -> str:
+        note("code block")
+        language = match.group(2).strip().lower()
+        label = f"{language} code block" if language in _FENCE_LANGUAGES else "code block"
+        return _placeholder(label, match.group(3).rstrip("\n"))
+
     def pem(match: re.Match[str]) -> str:
         note("key material")
         return "[pasted key material omitted]"
 
-    result = _PEM_BLOCK.sub(pem, _FENCE.sub(fence, text))
+    result = _PEM_BLOCK.sub(pem, _TILDE_FENCE.sub(tilde_fence, _FENCE.sub(fence, text)))
     lines = _replace_blocks(result.split("\n"), note)
     return "\n".join(_shape_backstop(lines, note)), kept
 

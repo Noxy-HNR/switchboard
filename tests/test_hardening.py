@@ -86,6 +86,44 @@ async def test_disconnected_switch_holds_lock_until_external_action_finishes(con
         assert not h.router._switch_lock.locked()
 
 
+async def test_repeated_cancellation_never_cancels_the_external_switch(config):
+    """anyio re-delivers a cancellation on every loop pass while a streaming
+    response waits on routing, so the switch sees several cancels, not one. Only
+    the first was shielded: the second cancelled the executor itself and let
+    the lock go while llama-server was still restarting."""
+    entered, finish = asyncio.Event(), asyncio.Event()
+    executor = FakeExecutor()
+    original = executor.switch
+    executor_cancelled = False
+
+    async def delayed(*args, **kwargs):
+        nonlocal executor_cancelled
+        entered.set()
+        try:
+            await finish.wait()
+        except asyncio.CancelledError:
+            executor_cancelled = True
+            raise
+        return await original(*args, **kwargs)
+
+    executor.switch = delayed
+    async with Harness(config, FakeLlama(), executor) as h:
+        deep = h.router.registry().by_id("deep-27b")
+        task = asyncio.create_task(h.router.switch_to(deep))
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0)
+        assert not executor_cancelled
+        assert h.router._switch_lock.locked()
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+        assert not executor_cancelled
+        assert executor.calls == ["deep-27b"]
+        assert not h.router._switch_lock.locked()
+
+
 @pytest.mark.parametrize('text,secret', [
     ('Authorization: Bearer abcdefghijklmnopqrst', 'abcdefghijklmnopqrst'),
     ('Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpwYXNz'),

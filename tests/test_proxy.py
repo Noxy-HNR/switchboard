@@ -122,6 +122,17 @@ async def test_models_are_listed_with_and_without_the_v1_prefix(harness: Harness
 # --- non-streaming ----------------------------------------------------------
 
 
+@pytest.mark.parametrize("value", ["100", True, -5, 12.5, None])
+async def test_a_malformed_answer_cap_is_ignored_by_routing(harness: Harness, value: Any) -> None:
+    """A string max_tokens used to reach the policy's arithmetic and 500 the
+    request before anything was forwarded. Routing now ignores it; the body
+    still goes to llama-server untouched, so the server judges the field."""
+    response = await harness.client.post("/v1/chat/completions", json=chat_body(max_tokens=value))
+
+    assert response.status_code == 200
+    assert response.headers["x-switchboard-model"] == "fast-9b"
+
+
 async def test_a_completion_is_returned_unchanged(harness: Harness) -> None:
     response = await harness.client.post("/v1/chat/completions", json=chat_body())
 

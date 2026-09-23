@@ -132,6 +132,20 @@ def build_task_context(
     )
 
 
+def _answer_cap(body: dict[str, Any]) -> int | None:
+    """The client's answer-length cap, if it gave a usable one.
+
+    Only routing reads this, as a hint. The body is still forwarded untouched,
+    so llama-server judges a malformed value itself; a string here must not
+    turn into a 500 before the request ever gets there.
+    """
+    for key in ("max_tokens", "max_completion_tokens"):
+        value = body.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
 def session_id_for(request: Request, body: dict[str, Any]) -> str | None:
     """Identify the conversation, without storing anything identifying.
 
@@ -345,7 +359,7 @@ def build_proxy_router(get_router) -> APIRouter:
                 policy=policy,
                 explicit_model=explicit_model,
                 requested_model=requested,
-                max_tokens=body.get("max_tokens") or body.get("max_completion_tokens"),
+                max_tokens=_answer_cap(body),
                 streaming=streaming,
                 source="proxy",
             )

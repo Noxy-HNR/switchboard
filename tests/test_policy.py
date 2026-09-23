@@ -567,3 +567,32 @@ def test_the_reason_states_difficulty_against_ceiling_as_it_is(
     from switchboard.policy import _against_ceiling
 
     assert _against_ceiling(difficulty, ceiling) == words
+
+
+def test_context_fit_uses_the_answer_length_the_policy_plans_for() -> None:
+    """The deep preset floors difficulty at hard (a ~1200-token answer). The fit
+    check used the raw difficulty (an ~80-token answer), so a 27B could be
+    chosen for a prompt that left no room for the answer it was chosen for."""
+    config = Config()
+    result = route(config, decision("general", 0.0), estimated_prompt_tokens=19_500, policy="deep")
+
+    deep = next(c for c in result.candidates if c.model is DEEP)
+    assert deep.feasible is False
+    assert "20480" in (deep.infeasible_reason or "")
+
+
+def test_ceiling_words_always_agree_with_the_printed_numbers() -> None:
+    """Half-steps such as an EWMA of 1.85 used to print "1.9 sits at its 1.8"."""
+    from switchboard.policy import _against_ceiling
+
+    for tenths in range(0, 400):
+        difficulty = tenths / 100 + 0.005  # every x.xx5 half-step, the risky ones
+        for ceiling in (1.0, 1.6, 1.8, 2.0, 2.5):
+            shown_d, shown_c = f"{difficulty:.1f}", f"{ceiling:.1f}"
+            words = _against_ceiling(difficulty, ceiling)
+            expected = (
+                "is above" if float(shown_d) > float(shown_c)
+                else "sits at" if shown_d == shown_c
+                else "sits within"
+            )
+            assert words == expected, (difficulty, ceiling, words)
