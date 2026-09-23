@@ -20,6 +20,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -123,7 +124,12 @@ def create_app(config: Config | None = None) -> FastAPI:
     async def dashboard() -> HTMLResponse:
         if not DASHBOARD_FILE.is_file():  # pragma: no cover
             return HTMLResponse("<h1>Dashboard not installed</h1>", status_code=404)
-        return HTMLResponse(DASHBOARD_FILE.read_text(encoding="utf-8"))
+        # The C:\AI dashboard shows the settings panel in a frame; no other page
+        # may frame it, so a site cannot overlay it and steer clicks on it.
+        return HTMLResponse(
+            DASHBOARD_FILE.read_text(encoding="utf-8"),
+            headers={"Content-Security-Policy": frame_ancestors(config)},
+        )
 
     @app.get("/", include_in_schema=False)
     async def index(request: Request) -> JSONResponse:
@@ -150,6 +156,19 @@ def create_app(config: Config | None = None) -> FastAPI:
     # without bound. Native clients (cptr, SDKs, curl) send no Origin at all.
     app.add_middleware(LocalBoundary, port=config.server.port, host=config.server.host)
     return app
+
+
+def frame_ancestors(config: Config) -> str:
+    """Who may frame the dashboard: itself and the stack's dashboard (:9090), on either loopback name."""
+    allowed = ["'self'"]
+    parsed = urlsplit(config.stack.dashboard_url)
+    if parsed.scheme in ("http", "https") and parsed.hostname:
+        port = f":{parsed.port}" if parsed.port else ""
+        hosts = [parsed.hostname]
+        if parsed.hostname in ("127.0.0.1", "localhost"):
+            hosts = ["127.0.0.1", "localhost"]
+        allowed.extend(f"{parsed.scheme}://{host}{port}" for host in hosts)
+    return "frame-ancestors " + " ".join(allowed)
 
 
 _MCP_HOLDER: dict[str, Any] = {}

@@ -111,9 +111,9 @@ seeded estimate is replaced the first time the real thing is observed.
 
 ## Settings and keys
 
-Open the dashboard and click **Settings** (or go to
-`http://127.0.0.1:8002/dashboard#settings`). Everything there applies at once,
-without a restart:
+Open your dashboard at `http://127.0.0.1:9090` and click the **Settings** tab.
+(The same panel is on Switchboard's own page, `http://127.0.0.1:8002/dashboard`,
+under **Settings**.) Everything there applies at once, without a restart:
 
 * **API keys** - paste a key, save, then **Test** it. Keys are written to
   `.env` in this folder and never shown again; the page only says whether one

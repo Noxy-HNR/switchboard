@@ -10,7 +10,8 @@ machine behaves exactly as it did before.
 | --- | --- | --- |
 | `~/.cptr/config.toml` | Added a "Switchboard" chat connection and a "switchboard" MCP tool server. Existing entries untouched. | `backups/cptr-config.toml.20260921-151843.bak`, moved to the Recycle Bin on 2026-09-23 because it held cptr's plaintext Browser Use key; `integrate-cptr.ps1 -Remove` undoes the edit without it |
 | `C:\AI\start.ps1` | Added a marker-bracketed block that starts Switchboard before the final health check. | `backups/start.ps1.20260921-101859.bak` |
-| `C:\AI\Config\models.json` | `activeModel` changed from `medgemma-27b-it-Q4_K_M.gguf` to `Qwen3.5-9B-UD-Q6_K_XL.gguf`, by the dashboard, when a model was loaded. | `backups/models.json.20260921-150256.premanual.bak` (before any change), then `backups/models.json.<stamp>.bak`, one per Switchboard process, taken before that process's first switch |
+| `C:\AI\Config\models.json` | `activeModel` changed from `medgemma-27b-it-Q4_K_M.gguf` to `Qwen3.5-9B-UD-Q6_K_XL.gguf`, by the dashboard, when a model was loaded. On 2026-09-23 the `Qwen3.5-9B-Q4_K_M.gguf` profile, whose file does not exist, was removed. | `backups/models.json.20260921-150256.premanual.bak` (before any change), `backups/models.json.<stamp>.bak` (one per Switchboard process, before its first switch), `backups/models.json.20260923-082421.pre-stale-cleanup.bak` |
+| `C:\AI\dashboard.html` | Added a **Settings** tab that frames Switchboard's settings panel (API keys included). Restart the dashboard server to pick up a change to this file. | `backups/dashboard.html.20260923-093849.bak`; also in the `C:\AI` repo's history |
 
 Created, not changed: `C:\AI\Switchboard\` (the project), and
 `C:\AI\Switchboard\data\switchboard.sqlite3` (its database).

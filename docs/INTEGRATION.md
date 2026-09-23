@@ -142,6 +142,15 @@ says so.
 
 ## The dashboard at :9090
 
+Its **Settings** tab shows Switchboard's settings panel, API keys included. The
+panel is served by Switchboard (`/dashboard?embed=settings`) inside a frame, so
+keys go straight to Switchboard and never pass through the dashboard's own
+server, which checks no request origins. Switchboard allows only this dashboard
+(and itself) to frame the page (`Content-Security-Policy: frame-ancestors`),
+and the frame reports its height to the page around it; that height is the only
+message it sends.
+
+
 Switchboard depends on the existing dashboard for one thing: performing
 switches, through the same `POST /api/models/load` its Models tab uses. With
 the dashboard down, Switchboard routes to whatever is already loaded and says

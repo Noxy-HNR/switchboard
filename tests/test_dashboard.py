@@ -132,3 +132,27 @@ def test_a_typed_key_goes_into_a_password_field_that_is_cleared_on_send(page: st
     """The one secret the page handles is never echoed: masked while typed, gone once sent."""
     assert 'input.type = "password";' in page
     assert 'input.value = "";' in page
+
+
+async def test_only_the_stack_dashboard_may_frame_the_page() -> None:
+    """The :9090 dashboard shows the settings panel in a frame; no other site may,
+    or it could overlay the page and steer clicks on key and settings buttons."""
+    app = create_app(Config())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://switchboard") as client:
+        response = await client.get("/dashboard")
+
+    assert response.headers["content-security-policy"] == (
+        "frame-ancestors 'self' http://127.0.0.1:9090 http://localhost:9090"
+    )
+
+
+def test_the_embedded_view_is_settings_only_and_polls_nothing(page: str) -> None:
+    assert 'get("embed") === "settings"' in page
+    assert "if (EMBEDDED || state.inflight)" in page, "embedded, refresh must not poll"
+    assert "switchboard-settings-height" in page
+
+
+def test_destructive_buttons_do_not_rely_on_confirm_dialogs(page: str) -> None:
+    """A frame from another origin may have confirm() refused; Remove and Reset ask twice instead."""
+    assert "secondClick(remove" in page and "secondClick(reset" in page

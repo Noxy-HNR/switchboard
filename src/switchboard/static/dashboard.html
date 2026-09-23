@@ -422,6 +422,11 @@
   #settings-wrap { padding: 14px 16px 0; max-width: 1800px; }
   #settings-wrap[hidden] { display: none; }
 
+  /* Embedded in the C:\AI dashboard: the settings panel alone, on that page's background. */
+  body.embed { padding: 0; background: transparent; }
+  body.embed header, body.embed #banner, body.embed #shadow-stripe, body.embed main { display: none; }
+  body.embed #settings-wrap { padding: 0; max-width: none; }
+
   .settings-intro {
     font-size: 12px;
     color: var(--fg-soft);
@@ -637,6 +642,9 @@
 
   var state = { paused: false, timer: null, inflight: false };
 
+  // Shown alone inside the C:\AI dashboard's Settings tab (see the end of this script).
+  var EMBEDDED = new URLSearchParams(window.location.search).get("embed") === "settings";
+
   // --- tiny DOM helpers ------------------------------------------------
   // Every one of these sets text through textContent. Nothing in this file
   // assigns innerHTML with API data, and nothing should start.
@@ -746,7 +754,8 @@
   }
 
   function refresh() {
-    if (state.inflight) { return Promise.resolve(); }
+    // Embedded, the page is only the settings panel: there is nothing to poll.
+    if (EMBEDDED || state.inflight) { return Promise.resolve(); }
     state.inflight = true;
 
     var keys = ["status", "providers", "routes", "stats", "models"];
@@ -1488,7 +1497,11 @@
       var reset = el("button", "danger", "Reset");
       reset.type = "button";
       reset.title = "Back to switchboard.toml's value: " + JSON.stringify(row.file_value);
-      reset.addEventListener("click", function () { resetSetting(row.path); });
+      reset.addEventListener("click", function () {
+        if (!Object.keys(changedValues()).length) { resetSetting(row.path); return; }
+        // Resetting reloads the form, which would drop the other unsaved edits.
+        secondClick(reset, "Discard edits and reset?", function () { resetSetting(row.path); });
+      });
       holder.appendChild(reset);
     }
     line.appendChild(holder);
@@ -1566,7 +1579,9 @@
       keyAction("PUT", key, { value: value }, "saved and in use");
     });
     remove.addEventListener("click", function () {
-      if (window.confirm("Remove the " + key.label + " from .env?")) { keyAction("DELETE", key, undefined, "removed"); }
+      secondClick(remove, "Click again to remove", function () {
+        keyAction("DELETE", key, undefined, "removed");
+      });
     });
     test.addEventListener("click", function () {
       setMsg(msg, "testing...", "");
@@ -1615,10 +1630,27 @@
       });
   }
 
-  function resetSetting(path) {
-    if (Object.keys(changedValues()).length && !window.confirm("Resetting reloads the form. Discard unsaved changes?")) {
+  // Browsers may refuse confirm() inside a frame from another origin - and the
+  // C:\AI dashboard embeds this panel from :9090 - so a destructive button asks
+  // for a second click instead of a dialog.
+  function secondClick(button, prompt, action) {
+    if (button.dataset.armed === "true") {
+      clearTimeout(button.armTimer);
+      button.dataset.armed = "false";
+      button.textContent = button.dataset.label;
+      action();
       return;
     }
+    button.dataset.label = button.textContent;
+    button.dataset.armed = "true";
+    button.textContent = prompt;
+    button.armTimer = setTimeout(function () {
+      button.dataset.armed = "false";
+      button.textContent = button.dataset.label;
+    }, 4000);
+  }
+
+  function resetSetting(path) {
     sendJSON("DELETE", SETTINGS_API + "/" + encodeURIComponent(path))
       .then(function (payload) {
         renderSettings(payload);
@@ -1659,6 +1691,28 @@
 
   byId("pause-btn").addEventListener("click", function () { setPaused(!state.paused); });
   byId("refresh-btn").addEventListener("click", function () { refresh(); });
+
+  // --- embedded in the C:\AI dashboard --------------------------------------
+  // /dashboard?embed=settings shows the settings panel alone, for the Settings
+  // tab of the dashboard on :9090. It polls nothing, and tells the page around
+  // it how tall it is so that page can size the frame (the number is all it
+  // sends).
+
+  if (EMBEDDED) {
+    document.body.classList.add("embed");
+    settingsState.open = true;
+    byId("settings-wrap").hidden = false;
+    loadSettings();
+    if (window.parent !== window) {
+      var reportHeight = function () {
+        window.parent.postMessage(
+          { type: "switchboard-settings-height", height: document.documentElement.scrollHeight }, "*");
+      };
+      if (window.ResizeObserver) { new ResizeObserver(reportHeight).observe(document.body); }
+      reportHeight();
+    }
+    return;
+  }
 
   if (location.hash === "#settings") { setSettingsOpen(true); }
   schedule();
