@@ -336,16 +336,16 @@ def _check_providers(config: Config, report: Report) -> None:
             + (", skips while llama-server is busy" if local.skip_when_busy else ""),
         )
     )
+    logit_in_chain = config.decisions.logit.enabled and "logit" in config.decisions.backends
     report.add(
         Check(
             "provider.logit",
-            "skip" if not config.decisions.logit.enabled else "ok",
-            "experimental backend is disabled"
-            if not config.decisions.logit.enabled
-            else "experimental backend is enabled",
-            hint=None
-            if not config.decisions.logit.enabled
-            else "Validate it with `switchboard eval --backends logit` before trusting it.",
+            "ok" if logit_in_chain else "skip",
+            "experimental backend is active in the decision chain" if logit_in_chain
+            else "experimental backend is enabled but not in the decision chain"
+            if config.decisions.logit.enabled else "experimental backend is disabled",
+            hint="Validate it with `switchboard eval --backends logit` before trusting it."
+            if logit_in_chain else None,
         )
     )
     report.add(
