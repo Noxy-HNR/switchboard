@@ -66,7 +66,8 @@ Copy-Item C:\AI\Switchboard\backups\start.ps1.<stamp>.bak C:\AI\start.ps1 -Force
 ### Put the active model back
 
 Switchboard routes through the dashboard, which records the loaded model as the
-stack's `activeModel`. The 9B is active because it was loaded during testing.
+stack's `activeModel`. Check the Models tab for the model currently loaded;
+it changed during the 2026-09-23 review as the stack was used.
 To go back to MedGemma, use the dashboard's Models tab, or:
 
 ```powershell

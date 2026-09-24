@@ -1,8 +1,10 @@
 # Resumption record
 
-**2026-09-23 - complete.** 575 offline tests pass; 23/23 live checks, 11/11
-integration checks and `doctor` (0 failed) pass against the final code with the
-9B resident. See [ACCEPTANCE.md](ACCEPTANCE.md).
+**2026-09-23 baseline:** 575 offline tests, 23/23 live checks and 11/11
+integration checks passed with the 9B resident. Later settings and recording
+changes passed 637 offline tests and a live Jev key test. After the 9B became
+resident again, the 23 live checks passed on the reviewed build too. See
+[ACCEPTANCE.md](ACCEPTANCE.md) for both sets of evidence.
 
 User decisions still in force: dashboard switching, redacted cloud summaries
 for all topics, additive cptr/start.ps1 integration, **9B-only GPU tests**
@@ -54,6 +56,11 @@ What happened after the 2026-09-21 baseline (351 tests):
 
 Open, and not Switchboard's to decide:
 
-- A TypeSafe API key, to live-test Jev (status BLOCKED_EXTERNAL). It can now be
-  entered and tested on the dashboard's Settings panel.
-- Merging (or pushing) the `switchboard-integration` branch of the `C:\AI` repo.
+- The TypeSafe key is now configured and answered a synthetic Jev test. The
+  `.env` file was found to inherit broad Windows read access; its ACL and future
+  key writes were restricted during the subsequent review.
+- cptr was not listening on port 8000 during the subsequent review. Its configuration and
+  Switchboard MCP tools checked out, but HTTP/UI use needs a running cptr.
+- The `switchboard-integration` branch was merged into `C:\AI` main in commit
+  `73da74a`; that parent repo now has separate local changes unrelated to this
+  review.

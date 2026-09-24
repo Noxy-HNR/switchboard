@@ -8,6 +8,8 @@ the real config/local.toml or .env.
 from __future__ import annotations
 
 import tomllib
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -201,6 +203,16 @@ async def test_a_malformed_key_is_refused_and_nothing_is_written(
     assert not (project / ".env").exists()
 
 
+async def test_bad_key_payload_is_never_reflected_in_validation_response(
+    settings_harness: Harness,
+) -> None:
+    response = await settings_harness.client.put(
+        "/settings/keys/typesafe", json={"value": {"pasted": SECRET}}
+    )
+    assert response.status_code == 422
+    assert SECRET not in response.text
+
+
 async def test_a_key_set_in_the_process_environment_is_pinned(
     settings_harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -271,6 +283,18 @@ def test_env_writes_keep_every_other_line(tmp_path: Path) -> None:
 
     write_env_value(tmp_path / "absent.env", "TYPESAFE_API_KEY", None)
     assert not (tmp_path / "absent.env").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows ACL")
+def test_saved_key_is_not_readable_by_other_local_users(tmp_path: Path) -> None:
+    path = tmp_path / ".env"
+    write_env_value(path, "TYPESAFE_API_KEY", SECRET)
+
+    acl = subprocess.run(["icacls", str(path)], capture_output=True, text=True, check=True).stdout
+    assert "Authenticated Users" not in acl
+    assert "BUILTIN\\Users:" not in acl
+    assert "SYSTEM:" in acl
+    assert path.read_text(encoding="utf-8").endswith(f"TYPESAFE_API_KEY={SECRET}\n")
 
 
 def test_local_toml_round_trips(tmp_path: Path) -> None:

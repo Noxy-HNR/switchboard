@@ -1,15 +1,49 @@
 # Acceptance
 
-Every requirement, its status, and the evidence. Verified on this machine on
-**2026-09-23** against the final code (commit `4a861c3`; later commits change
-only documentation), with `Qwen3.5-9B-UD-Q6_K_XL` resident on llama-server, the
-dashboard running, and no TypeSafe API key configured. The first pass was on
+Every requirement, its status, and the evidence. The table below is the original
+**2026-09-23 baseline** against commit `4a861c3`, with
+`Qwen3.5-9B-UD-Q6_K_XL` resident on llama-server. Later commits added settings,
+key management, a recording guard and registry changes; their review is recorded
+below. The first pass was on
 2026-09-21; everything below was re-run after the audit, the TypeSafe review
 and an adversarial review of the result, and the numbers are the final run's.
 
 Statuses: **PASS** (verified here) · **BLOCKED_EXTERNAL** (built and tested, but
 final verification needs something unavailable) · **NOT_APPLICABLE** (discovery
 showed it does not apply to this installation).
+
+## Review after the settings and recording changes
+
+On 2026-09-23, commit `57e382e` plus the subsequent security review passed
+**637 offline tests**, `mypy` across 34 source files, and Ruff correctness checks.
+`switchboard doctor` reported 14 checks, 0 failures and one low-RAM warning.
+The configured TypeSafe key made a real Jev synthetic decision in **864 ms**.
+The key file's Windows ACL was restricted to the current user, SYSTEM and
+administrators, and a malformed key request no longer echoes input. Switchboard
+alone was restarted to load the reviewed code; direct llama.cpp was preserved.
+
+When the approved 9B became resident again, `scripts/validate_live.py` passed
+**23/23** checks on the reviewed build, including real Jev decisions, streamed
+chunks arriving incrementally, tool forwarding, explicit model bypass, a
+simulated Jev 503 falling back to the local backend, MCP, direct llama.cpp and
+privacy canaries. Evidence: `reports/live-20260924-012503.json`.
+`switchboard eval --backends jev` ran 47 task and 17 step fixtures in
+`reports/eval-20260924-012537.json`: 0.596 task agreement, 0.667 step agreement,
+p50 214/226 ms, with two intentional step skips for pasted machine output.
+Estimated TypeSafe input cost was $0.002771. These fixture labels are engineering
+expectations, not ground truth; Jev's domain and difficulty checks were 40/43
+and 38/47, while ambiguity was 36/44.
+
+The current cptr configuration and runtime database
+still have the original entries and Switchboard additions, and Switchboard MCP
+tools answered. cptr itself was not listening on port 8000; its HTTP/UI check
+is therefore **BLOCKED_EXTERNAL** until cptr is started. The original cptr
+backup was removed for privacy, so a full historical byte comparison cannot be
+repeated. See the timestamped `reports/integration-validation-*.json` for the
+current check, and the older `reports/integration-validation.json` for the
+original complete run. The new recording guard has offline tests; it has not
+been exercised against a live recording or a real 27B switch. This review did
+not initiate a 27B model load.
 
 Reports cited below are in `reports/`: `live-20260923-043849` (23 live checks),
 `eval-20260923-043737` (backend comparison), `benchmark-20260923-043907`

@@ -138,7 +138,9 @@ GPU memory; smaller models can still be loaded. It learns this from
 `C:\AI\Projects\lecture-notes\state\status.json`, which it only reads. Turn the
 guard off or change the limit on the dashboard's Settings panel, under Switch
 guards. A request that names a large model during a recording gets a 409 that
-says so.
+says so. This only covers switches made through Switchboard. The stack
+dashboard's Models tab can still load a large model directly, and Switchboard
+does not unload one that was already resident when recording began.
 
 ## The dashboard at :9090
 

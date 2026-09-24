@@ -66,7 +66,8 @@ utility_max_tokens = 160
 ram_guard = "warn"
 ram_headroom_gb = 1.0
 # While a Lecture Notes recording runs (read from its status file, see [stack]),
-# never load a model file larger than this. The 27Bs are configured to fill the
+# Switchboard will not load a model file larger than this. Direct loads from
+# the stack dashboard are outside this guard. The 27Bs are configured to fill the
 # GPU even when partially offloaded, so loading one mid-lecture could take the
 # memory the transcription model needs. Smaller models stay allowed, the loaded
 # model is never forced out, and the guard covers automatic, explicit and

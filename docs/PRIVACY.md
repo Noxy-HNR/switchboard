@@ -132,6 +132,13 @@ from this same file for its own Jev features (exam hints and search ranking);
 what it sends is described in its README, under "Jev", and its calls are not
 counted in the usage line on the key's row.
 
+On Windows, a key saved through Settings is written to a random temporary file
+whose ACL is restricted to the current user, SYSTEM and administrators before
+the key bytes are written, then atomically replaces `.env`. This matters on this
+machine because an ordinary file under `C:\AI` otherwise inherits read access
+for other local users. The existing `.env` ACL was tightened on 2026-09-23;
+its previous ACL descriptor, without key contents, is in `backups/`.
+
 **Settings** saved from the dashboard live in `config/local.toml`
 (git-ignored).
 

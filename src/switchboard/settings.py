@@ -6,8 +6,9 @@ Two stores, both git-ignored and both in this project:
   over ``config/switchboard.toml`` (see `config.load_config`), so the commented
   defaults file is never rewritten and deleting ``local.toml`` resets
   everything.
-* ``.env`` in the project root holds keys. A key is written there and nowhere
-  else: never to ``local.toml``, the database, a log, or an API response. The
+* ``.env`` in the project root holds keys. Its Windows ACL is restricted to the
+  current user, administrators and SYSTEM before key bytes are written. A key
+  never goes to ``local.toml``, the database, a log, or an API response. The
   settings API reports only whether a key is set, where it came from and its
   last four characters.
 
@@ -24,9 +25,13 @@ applying at the next start.
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 import os
+import subprocess
+import sys
+import tempfile
 import time
 import tomllib
 from dataclasses import dataclass
@@ -122,8 +127,8 @@ SETTINGS: tuple[Setting, ...] = (
     ),
     Setting(
         "routing.guards.recording_guard", "Switch guards", "Protect lecture recordings",
-        "While Lecture Notes is recording, never load a model larger than the limit below, so "
-        "the transcription keeps its GPU memory. Smaller models can still be loaded.",
+        "While Lecture Notes is recording, Switchboard refuses to load a model larger "
+        "than the limit below. Direct loads from the stack dashboard are separate.",
         "bool",
     ),
     Setting(
@@ -590,11 +595,46 @@ def _toml_lines(data: dict[str, Any], prefix: str = "") -> list[str]:
     return lines
 
 
-def _atomic_write(path: Path, text: str) -> None:
+def _protect_secret_file(path: Path) -> None:
+    """Give only this Windows user, SYSTEM and administrators access to a key file.
+
+    A normal file in C:\\AI inherits an ACL readable by all local users.  Set the
+    replacement file's ACL *before* it becomes .env, and fail closed if Windows
+    cannot apply it.  The SID form avoids localized account names.
+    """
+    if sys.platform != "win32":
+        path.chmod(0o600)
+        return
+    identity = subprocess.run(
+        ["whoami", "/user", "/fo", "csv", "/nh"],
+        capture_output=True, text=True, check=True,
+    )
+    rows = list(csv.reader(identity.stdout.splitlines()))
+    if len(rows) != 1 or len(rows[0]) != 2 or not rows[0][1].startswith("S-1-"):
+        raise OSError("could not identify the Windows user for the key file ACL")
+    sid = rows[0][1]
+    subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/grant:r",
+         f"*{sid}:(F)", "*S-1-5-18:(F)", "*S-1-5-32-544:(F)"],
+        capture_output=True, text=True, check=True,
+    )
+
+
+def _atomic_write(path: Path, text: str, *, secret: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(temporary, path)
+    descriptor, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        if secret:
+            _protect_secret_file(temporary)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            descriptor = -1
+            stream.write(text)
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def write_toml(path: Path, data: dict[str, Any]) -> None:
@@ -629,7 +669,7 @@ def write_env_value(path: Path, name: str, value: str | None) -> None:
         kept.append(line)
     if value is not None and not written:
         kept.append(f"{name}={value}")
-    _atomic_write(path, "\n".join(kept) + "\n")
+    _atomic_write(path, "\n".join(kept) + "\n", secret=True)
 
 
 # --- testing a key -------------------------------------------------------------------
@@ -686,12 +726,6 @@ class _SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     values: dict[str, Any]
-
-
-class _KeyUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    value: str
 
 
 def build_settings_router(get_router: Callable[[Request], Any]) -> APIRouter:
@@ -761,10 +795,25 @@ def build_settings_router(get_router: Callable[[Request], Any]) -> APIRouter:
             raise fail(error) from None
         return apply(request, updated)
 
-    @api.put("/settings/keys/{key_id}", summary="Save a key to .env (never returned)")
-    async def put_key(request: Request, key_id: str, update: _KeyUpdate) -> dict[str, Any]:
+    @api.put(
+        "/settings/keys/{key_id}",
+        summary="Save a key to .env (never returned)",
+        openapi_extra={"requestBody": {"required": True, "content": {"application/json": {
+            "schema": {"type": "object", "required": ["value"], "additionalProperties": False,
+                       "properties": {"value": {"type": "string", "format": "password"}}}
+        }}}},
+    )
+    async def put_key(request: Request, key_id: str) -> dict[str, Any]:
+        # FastAPI's default 422 includes the rejected input. A malformed value
+        # can itself contain a pasted key, so validate this one body by hand.
         try:
-            updated = save_key(get_router(request).config, key_id, update.value, dict(os.environ))
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="expected a JSON key value") from None
+        if not isinstance(body, dict) or set(body) != {"value"} or not isinstance(body["value"], str):
+            raise HTTPException(status_code=422, detail="expected one string field named value")
+        try:
+            updated = save_key(get_router(request).config, key_id, body["value"], dict(os.environ))
         except SettingsError as error:
             raise fail(error) from None
         return apply(request, updated)

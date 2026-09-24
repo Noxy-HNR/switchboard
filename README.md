@@ -72,9 +72,10 @@ mysterious:
 
 A switch has to clear three bars: it must be worth more than the seconds it
 costs, it must actually improve the answer, and the moment has to be right
-(server idle, conversation settled, not a short utility call). And while
-Lecture Notes is recording, no model over 9 GB is loaded at all, so the
-transcription keeps its GPU memory.
+(server idle, conversation settled, not a short utility call). While
+Lecture Notes is recording, Switchboard refuses requests to load a model over
+9 GB. This guard applies to Switchboard's switches; the stack dashboard's own
+Models tab and a large model already resident remain outside its control.
 
 Most requests never pay for a semantic decision at all - the rule engine
 settles them in about a millisecond, and only genuinely hard or medical
