@@ -1,5 +1,10 @@
 # Acceptance
 
+**Current operational validation (2026-09-26):** see
+[OPERATIONS.md](OPERATIONS.md) for the current four-model inventory, conservative
+onboarding of the new 27B, fresh tests/evals/live checks, cptr now answering, and
+the verified master startup fix. The dated evidence below is retained as history.
+
 Every requirement, its status, and the evidence. The table below is the original
 **2026-09-23 baseline** against commit `4a861c3`, with
 `Qwen3.5-9B-UD-Q6_K_XL` resident on llama-server. Later commits added settings,

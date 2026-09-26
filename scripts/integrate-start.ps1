@@ -70,7 +70,14 @@ $BeginMarker
 if (Test-Path `$SwitchboardStart) {
     Step "Starting Switchboard"
     try {
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `$SwitchboardStart | Out-Null
+        # Wait on the launcher process rather than a pipeline a service may inherit.
+        `$sbLauncher = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru ``
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$SwitchboardStart) ``
+            -RedirectStandardOutput 'C:\AI\Logs\switchboard-start.stdout.log' ``
+            -RedirectStandardError 'C:\AI\Logs\switchboard-start.stderr.log'
+        if (-not `$sbLauncher.WaitForExit(60000)) {
+            Warn 'Switchboard launcher is still running after 60 seconds; checking service health.'
+        }
         if (Test-Endpoint -Url "http://127.0.0.1:8002/health" -TimeoutSec 5) {
             OK "Switchboard         READY  :8002"
         } else {

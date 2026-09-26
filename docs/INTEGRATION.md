@@ -58,6 +58,13 @@ exists, wraps everything in try/catch, and only warns on failure.
 
 Starting Switchboard by hand is still just `scripts\start.ps1`.
 
+The master script also accepts `-NoUi -NoPause` for unattended startup. Its
+Switchboard launcher writes to `C:\AI\Logs\switchboard-start.stdout.log` and
+`switchboard-start.stderr.log`. It waits on the launcher process, bounded at
+60 seconds, then checks health. This avoids waiting indefinitely on a pipeline
+handle inherited by the service. A fresh Switchboard start through this path
+completed successfully on 2026-09-26, with llama.cpp and cptr also healthy.
+
 ## MCP (done)
 
 Switchboard serves MCP over streamable HTTP at `/mcp`, the transport cptr's

@@ -17,13 +17,29 @@ cptr / scripts / agents          ->  Switchboard :8002  ->  llama-server :10000
 
 ## Start it
 
+For normal use on this machine, start the complete stack:
+
+```powershell
+C:\AI\start.ps1
+```
+
+This checks llama.cpp, starts cptr and Switchboard as needed, and opens the
+interfaces. For an unattended startup with no windows or final prompt:
+
+```powershell
+C:\AI\start.ps1 -NoUi -NoPause
+```
+
+If the rest of the stack is already running, start only Switchboard:
+
 ```powershell
 cd C:\AI\Switchboard
 .\scripts\setup.ps1      # once: creates .venv, checks the machine
 .\scripts\start.ps1
 ```
 
-That is the normal way. `C:\AI\start.ps1` also starts it now, after cptr.
+The current machine's operational settings and validation are in
+[OPERATIONS.md](docs/OPERATIONS.md).
 
 | | |
 | --- | --- |
@@ -66,8 +82,8 @@ mysterious:
    Adapter running on the model already loaded, then a rule engine
    that cannot fail.
 2. **Deterministic facts** - what is loaded, what fits in context, how fast
-   each model runs, what a load costs, how much RAM is free. Measured, never
-   guessed.
+   each model runs, what a load costs, how much RAM is free. Unknown speeds and
+   load costs use explicitly documented estimates until measurements exist.
 3. **Policy** - combines both into one choice and one sentence explaining it.
 
 A switch has to clear three bars: it must be worth more than the seconds it

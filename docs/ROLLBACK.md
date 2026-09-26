@@ -6,6 +6,16 @@ machine behaves exactly as it did before.
 
 ## What was changed
 
+The 2026-09-26 operational pass added `-NoUi` and `-NoPause` to
+`C:\AI\start.ps1` and corrected its Switchboard launcher wait. The exact
+pre-change file is `backups/operation-20260926-150303/start.ps1`.
+The same directory contains `local.toml` from before the operational settings:
+the new Huihui 27B is excluded from automatic switches and the host-RAM guard
+blocks a switch when its estimate does not fit. Restore that `local.toml` to
+`config/local.toml` and restart Switchboard to undo those two settings.
+These backups contain no API keys. The default invocation of the master script
+still opens the interfaces and waits for Enter.
+
 | File | Change | Backup |
 | --- | --- | --- |
 | `~/.cptr/config.toml` | Added a "Switchboard" chat connection and a "switchboard" MCP tool server. Existing entries untouched. | `backups/cptr-config.toml.20260921-151843.bak`, moved to the Recycle Bin on 2026-09-23 because it held cptr's plaintext Browser Use key; `integrate-cptr.ps1 -Remove` undoes the edit without it |
