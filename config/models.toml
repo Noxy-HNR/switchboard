@@ -14,14 +14,29 @@
 # routing reason always names the ceiling that decided a route.
 #
 # Anything Switchboard measures at runtime (load seconds, tokens/sec) is stored
-# in the database and overrides the seeds below.
+# in the database and overrides the seeds below. So a seed only decides routing
+# for a model that has no runtime samples yet.
+#
+# Things that are coupled to values in this file:
+#   * `role = "general-fast"` is matched literally by evals/runner.py (it picks
+#     the starting model by it). Other roles are labels.
+#   * A model's id is what config/local.toml `auto_exclude` (the Settings panel)
+#     refers to. A model without an `id` here gets one derived from its filename.
+#     Do not add or change an id on a model that is listed in auto_exclude, or
+#     the exclusion silently stops applying.
+#
+# Speeds below were measured 2026-09-26 (tuning log sessions 8-9) with
+# temperature 0.2-0.7 prose prompts. gen_tps is decode speed on prose; prompt_tps
+# is cold prefill of a ~2.2k-token prompt; load_s is the dashboard load call to
+# "ready" with the file already cached. All four models use speculative decoding
+# (MTP and/or n-gram), which is why gen_tps is well above a plain llama-bench run.
 
 [[model]]
-file = "Qwen3.5-9B-UD-Q6_K_XL.gguf"
+file = "Qwen3.5-9B-UD-Q6_K_XL-mtp.gguf"
 id = "qwen3.5-9b"
 aliases = ["qwen9b", "9b", "fast"]
 role = "general-fast"
-summary = "Fast general model, fully GPU resident. The daily driver."
+summary = "Fast general model, fully GPU resident, with an MTP head plus n-gram speculation: about 85-98 tok/s on prose and 300+ tok/s on copy-heavy code edits, 131K context. The daily driver."
 enabled = true
 tool_calling = "good"
 
@@ -34,17 +49,47 @@ writing = 2.1
 system_ops = 2.0
 
 [model.measured]
-gen_tps = 30.2
-gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 5 (2026-09-10), Brave open"
-prompt_tps = 300.0
-prompt_tps_source = "estimate: full GPU offload, not yet measured on this machine"
+gen_tps = 85.0
+gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 9 (2026-09-26), MTP + ngram-mod, ctx 131072, prose 83-98 tok/s over four runs"
+prompt_tps = 2500.0
+prompt_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 9 (2026-09-26), 2.4-2.6k tok/s on a ~2.2k-token prompt"
+load_s = 19.0
+load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 9 (2026-09-26), median of 10 loads, 9-24 s, file cached"
+
+[[model]]
+file = "Huihui-Qwen3.8-27B-abliterated-GSQ-RCO-IQ3_XXS-mtp.gguf"
+# No `id` on purpose: the derived id is the one config/local.toml auto_exclude names.
+aliases = ["huihui", "27b-mtp", "27b-fast"]
+role = "deep-reasoning"
+summary = "Strongest general reasoning available locally, and fully GPU resident (10.4 GB IQ3_XXS with an MTP head plus n-gram speculation): about 50 tok/s, roughly 2.5x the older 27B, but only a 24K context. Abliterated Qwen3.8-27B fine-tune."
+enabled = true
+tool_calling = "good"
+# Same Qwen3.8-27B base as the older 27B below, so the same ceilings. Its perplexity on the
+# local corpus is about 5% higher (10.72 vs 10.21, within the error bars) and the fine-tune
+# differs, so there is no measured basis to rate it higher or lower.
+
+[model.capability]
+general = 2.6
+coding = 2.5
+research = 2.5
+medical = 1.6
+writing = 2.5
+system_ops = 2.4
+
+[model.measured]
+gen_tps = 49.0
+gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, sessions 7-8 (2026-09-25/26), MTP + ngram-mod, ctx 24576, prose 48.6-53.1 tok/s"
+prompt_tps = 900.0
+prompt_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), 900-925 tok/s on a ~2.2k-token prompt"
+load_s = 22.0
+load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), median of 16 loads, 11-27 s, file cached"
 
 [[model]]
 file = "Qwen3.8-27B-Uncensored-IQ3_M.gguf"
 id = "qwen3.8-27b"
 aliases = ["qwen27b", "27b", "deep"]
-role = "deep-reasoning"
-summary = "Strongest general reasoning available locally. Partially offloaded (60/64 layers), ~3x slower than the 9B."
+role = "deep-reasoning-alt"
+summary = "Same Qwen3.8-27B family as the Huihui IQ3_XXS above, an older abliteration at a larger quant (11.9 GB IQ3_M) that does not fit on the GPU: 60 of 65 layers offloaded, about 20 tok/s with n-gram speculation, 20K context. Slightly lower perplexity than the Huihui file (within error) but 2.5x slower; kept as an alternative."
 enabled = true
 tool_calling = "good"
 
@@ -57,17 +102,19 @@ writing = 2.5
 system_ops = 2.4
 
 [model.measured]
-gen_tps = 10.2
-gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 4 (2026-09-10), Brave open, 9.6-10.8 tok/s"
-prompt_tps = 60.0
-prompt_tps_source = "estimate: partial offload, not yet measured on this machine"
+gen_tps = 20.0
+gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), ngram-simple, ngl 60, threads 20, prose 19-21 tok/s"
+prompt_tps = 740.0
+prompt_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), 725-750 tok/s on a ~2.2k-token prompt"
+load_s = 16.0
+load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), median of 8 loads, 15-22 s, file cached"
 
 [[model]]
 file = "medgemma-27b-it-Q4_K_M.gguf"
 id = "medgemma-27b"
 aliases = ["medgemma", "medical"]
 role = "medical-specialist"
-summary = "Medical/clinical specialist. Slowest of the three and its file (16.5 GB) exceeds total system RAM."
+summary = "Medical/clinical specialist (Gemma-3 based). 16.5 GB Q4_K_M with 37 of 62 layers on the GPU: about 7 tok/s, 40K context, and about 9x faster on copy-heavy work with n-gram speculation. The slowest model here, and its file exceeds total system RAM."
 enabled = true
 # Gemma-3 based: its chat template has no tool-call support. Verified from the
 # GGUF chat template at registry build time; this is the fallback assumption.
@@ -82,9 +129,9 @@ writing = 1.9
 system_ops = 1.0
 
 [model.measured]
-gen_tps = 5.0
-gen_tps_source = "C:/AI/Logs/llama.stderr.log (2026-09-18), 4.6-5.6 tok/s over several completions"
-prompt_tps = 23.0
-prompt_tps_source = "C:/AI/Logs/llama.stderr.log (2026-09-18), 22.8 tok/s on a 124-token prompt"
-load_s = 27.6
-load_s_source = "C:/AI/Logs/llama.stderr.log (2026-09-18): process start to 'model loaded'"
+gen_tps = 7.3
+gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), ngl 37, ctx 40960, prose 7.2-7.6 tok/s"
+prompt_tps = 285.0
+prompt_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), 255-300 tok/s on a ~2.2k-token prompt (was 77-164 while RAM was scarce)"
+load_s = 19.0
+load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), median of 13 loads, 17-25 s, file cached"
