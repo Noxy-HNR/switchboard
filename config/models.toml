@@ -59,7 +59,9 @@ load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 9 (2026-09-26), med
 [[model]]
 file = "Huihui-Qwen3.8-27B-abliterated-GSQ-RCO-IQ3_XXS-mtp.gguf"
 # No `id` on purpose: the derived id is the one config/local.toml auto_exclude names.
-aliases = ["huihui", "27b-mtp", "27b-fast"]
+# "27b", "qwen27b" and "deep" are how clients ask for the 27B by name (registry.resolve takes the
+# first match), so they belong on the model that is the better 27B: this one.
+aliases = ["huihui", "qwen27b", "27b", "deep", "27b-mtp", "27b-fast"]
 role = "deep-reasoning"
 summary = "Strongest general reasoning available locally, and fully GPU resident (10.4 GB IQ3_XXS with an MTP head plus n-gram speculation): about 50 tok/s, roughly 2.5x the older 27B, but only a 24K context. Abliterated Qwen3.8-27B fine-tune."
 enabled = true
@@ -87,7 +89,7 @@ load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), med
 [[model]]
 file = "Qwen3.8-27B-Uncensored-IQ3_M.gguf"
 id = "qwen3.8-27b"
-aliases = ["qwen27b", "27b", "deep"]
+aliases = ["27b-alt", "deep-alt", "iq3m"]
 role = "deep-reasoning-alt"
 summary = "Same Qwen3.8-27B family as the Huihui IQ3_XXS above, an older abliteration at a larger quant (11.9 GB IQ3_M) that does not fit on the GPU: 60 of 65 layers offloaded, about 20 tok/s with n-gram speculation, 20K context. Slightly lower perplexity than the Huihui file (within error) but 2.5x slower; kept as an alternative."
 enabled = true
