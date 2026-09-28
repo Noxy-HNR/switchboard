@@ -25,11 +25,12 @@
 #     Do not add or change an id on a model that is listed in auto_exclude, or
 #     the exclusion silently stops applying.
 #
-# Speeds below were measured 2026-09-26 (tuning log sessions 8-9) with
+# Speeds below were measured 2026-09-26/28 (tuning log sessions 8, 9 and 13) with
 # temperature 0.2-0.7 prose prompts. gen_tps is decode speed on prose; prompt_tps
 # is cold prefill of a ~2.2k-token prompt; load_s is the dashboard load call to
-# "ready" with the file already cached. All four models use speculative decoding
+# "ready" with the file already cached. Every model here uses speculative decoding
 # (MTP and/or n-gram), which is why gen_tps is well above a plain llama-bench run.
+# A field that was never measured is left out, so Switchboard fills it from runtime.
 
 [[model]]
 file = "Qwen3.5-9B-UD-Q6_K_XL-mtp.gguf"
@@ -87,31 +88,6 @@ load_s = 22.0
 load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), median of 16 loads, 11-27 s, file cached"
 
 [[model]]
-file = "Qwen3.8-27B-Uncensored-IQ3_M.gguf"
-id = "qwen3.8-27b"
-aliases = ["27b-alt", "deep-alt", "iq3m"]
-role = "deep-reasoning-alt"
-summary = "Same Qwen3.8-27B family as the Huihui IQ3_XXS above, an older abliteration at a larger quant (11.9 GB IQ3_M) that does not fit on the GPU: 60 of 65 layers offloaded, about 20 tok/s with n-gram speculation, 20K context. Slightly lower perplexity than the Huihui file (within error) but 2.5x slower; kept as an alternative."
-enabled = true
-tool_calling = "good"
-
-[model.capability]
-general = 2.6
-coding = 2.5
-research = 2.5
-medical = 1.6
-writing = 2.5
-system_ops = 2.4
-
-[model.measured]
-gen_tps = 20.0
-gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), ngram-simple, ngl 60, threads 20, prose 19-21 tok/s"
-prompt_tps = 740.0
-prompt_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), 725-750 tok/s on a ~2.2k-token prompt"
-load_s = 16.0
-load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), median of 8 loads, 15-22 s, file cached"
-
-[[model]]
 file = "medgemma-27b-it-Q4_K_M.gguf"
 id = "medgemma-27b"
 aliases = ["medgemma", "medical"]
@@ -137,3 +113,75 @@ prompt_tps = 285.0
 prompt_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), 255-300 tok/s on a ~2.2k-token prompt (was 77-164 while RAM was scarce)"
 load_s = 19.0
 load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 8 (2026-09-26), median of 13 loads, 17-25 s, file cached"
+
+[[model]]
+file = "OxCoder-9B.i1-Q6_K.gguf"
+id = "oxcoder-9b"
+aliases = ["oxcoder", "oxcoder-9b", "agent"]
+role = "agent-long-context"
+summary = "Long-context agent model: OxCoder-9B, a Qwen3.5-9B fine-tune trained on coding-agent traces. Fully GPU resident (7.4 GB Q6_K with n-gram speculation, no MTP head): about 57 tok/s and a 229K context. Passed 22/22 multi-step tool tasks, including a 70K-token session; coding equal to the 9B (19/48)."
+enabled = true
+tool_calling = "good"
+# Measured against the 9B on the same tasks (session 13): agent tool tasks 22/22 vs 19/22
+# (the 9B's misses were empty final answers), coding 19/48 for both, reasoning set 2/8 vs 3/8
+# (every miss on both was the token budget running out). So the 9B's ceilings, with system_ops
+# one step higher for the tool-use result.
+
+[model.capability]
+general = 2.1
+coding = 2.0
+research = 1.9
+medical = 1.0
+writing = 2.1
+system_ops = 2.1
+
+[model.measured]
+gen_tps = 57.0
+gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 13 (2026-09-28), ngram-mod, contexts 131072-262144, prose 56.7-57.3 tok/s over five loads"
+load_s = 6.2
+load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 13 (2026-09-28), median of 5 loads, 6-8 s, file cached"
+
+[[model]]
+file = "Ternary-Bonsai-2-27B-PTQ1_0.gguf"
+id = "bonsai-27b"
+aliases = ["bonsai", "bonsai-27b"]
+role = "experimental"
+summary = "UNTESTED. PrismML's ternary (1.75-bit) compression of Qwen3.8-27B, 5.95 GB, run by PrismML's own llama.cpp build (Tools/llama-prism, set by serverBinary in models.json). Starts at 64K context and medium reasoning effort. Not abliterated."
+enabled = true
+tool_calling = "good"
+# Placeholder ceilings copied from the 2-bit Huihui until the overnight tests run. It is in
+# config/local.toml auto_exclude, so Switchboard loads it only when a request names it.
+
+[model.capability]
+general = 2.5
+coding = 2.2
+research = 2.4
+medical = 1.5
+writing = 2.4
+system_ops = 2.3
+
+[[model]]
+file = "Huihui-Qwen3.8-27B-abliterated-UD-IQ2_S-MTP.gguf"
+id = "huihui-27b-iq2"
+aliases = ["huihui-iq2", "huihui-2bit", "27b-long", "deep-long"]
+role = "deep-reasoning-long-context"
+summary = "Smaller 2-bit copy of the Huihui 27B (8.8 GB UD-IQ2_S with an MTP head plus n-gram speculation): a 57K context instead of 24K and faster, about 56 tok/s, but weaker at hard coding (35/48 vs 42/48 for the IQ3_XXS file). For when the 27B needs more room."
+enabled = true
+tool_calling = "good"
+# Measured against the IQ3_XXS file on the same tasks (sessions 10-13): coding 35/48 vs 42/48
+# at medium effort (class design 4/8 vs 8/8, hard 9/16 vs 12/16), reasoning set 7/8 vs 8/8,
+# agent tool tasks 18/18 vs 17/18. Coding ceiling 0.3 lower; the rest 0.1 lower for the 2-bit quant.
+
+[model.capability]
+general = 2.5
+coding = 2.2
+research = 2.4
+medical = 1.5
+writing = 2.4
+system_ops = 2.3
+
+[model.measured]
+gen_tps = 56.0
+gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 13 (2026-09-28), MTP + ngram-mod, contexts 32768-65536, prose 55.8-56.0 tok/s over five loads"
+load_s = 7.2
+load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 13 (2026-09-28), 5 loads, all 7.2 s, file cached"
