@@ -146,7 +146,7 @@ file = "Ternary-Bonsai-2-27B-PTQ1_0.gguf"
 id = "bonsai-27b"
 aliases = ["bonsai", "bonsai-27b"]
 role = "experimental"
-summary = "UNTESTED. PrismML's ternary (1.75-bit) compression of Qwen3.8-27B, 5.95 GB, run by PrismML's own llama.cpp build (Tools/llama-prism, set by serverBinary in models.json). 131K context (1.4 GB VRAM spare), about 51 tok/s, medium reasoning effort. Not abliterated."
+summary = "UNTESTED. PrismML's ternary (1.75-bit) compression of Qwen3.8-27B, 5.95 GB, run by PrismML's own llama.cpp build (Tools/llama-prism, set by serverBinary in models.json). 147K context (0.8 GB VRAM spare, recall verified at 85% full), about 51 tok/s, medium reasoning effort. Not abliterated."
 enabled = true
 tool_calling = "good"
 # Placeholder ceilings copied from the 2-bit Huihui until the overnight tests run. It is in
