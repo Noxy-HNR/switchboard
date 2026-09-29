@@ -136,9 +136,9 @@ class HostFacts:
         self._gpu: tuple[float, GpuStatus] | None = None
         self._gpu_lock = asyncio.Lock()
 
-    def memory(self) -> MemoryStatus:
+    def memory(self, *, force: bool = False) -> MemoryStatus:
         now = time.monotonic()
-        if self._memory and now - self._memory[0] < self._ttl_s:
+        if not force and self._memory and now - self._memory[0] < self._ttl_s:
             return self._memory[1]
         status = memory_status()
         self._memory = (now, status)

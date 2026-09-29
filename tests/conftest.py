@@ -370,7 +370,7 @@ class FixedHostFacts(HostFacts):
         super().__init__(ttl_s=3600)
         self._fixed = MemoryStatus(total_gb=total_gb, free_gb=free_gb)
 
-    def memory(self) -> MemoryStatus:
+    def memory(self, *, force: bool = False) -> MemoryStatus:
         return self._fixed
 
     async def gpu(self):  # type: ignore[override]

@@ -578,6 +578,24 @@ class Router:
             if status.healthy and status.busy is not False:
                 return refused("llama-server is busy or its slot state is unknown")
 
+            # Every path that can load a model reaches this lock, including named
+            # chat models and /agent/switch. Read ullAvailPhys afresh here: the
+            # policy's cached RAM estimate and its advisory "warn" setting must
+            # never authorise a load that cannot leave the configured headroom.
+            memory = self._host.memory(force=True)
+            if not memory.known:
+                return refused("available physical RAM could not be measured")
+            if target.size_bytes <= 0:
+                return refused(f"{target.id}'s host-RAM footprint cannot be estimated")
+            needed = target.host_ram_estimate_gb()
+            headroom = self._config.routing.guards.ram_headroom_gb
+            available = memory.free_gb or 0.0
+            if available < needed + headroom:
+                return refused(
+                    f"{target.id} needs ~{needed:.1f} GB host RAM plus "
+                    f"{headroom:.1f} GB headroom; only {available:.1f} GB is available"
+                )
+
             result = await self._run_to_completion(target, from_model, trigger=trigger)
             self._record_switch(result, trigger=trigger)
             if result.ok and result.load_ms:

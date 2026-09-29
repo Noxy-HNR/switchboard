@@ -25,6 +25,7 @@ from switchboard.decisions.schema import StepDecision
 from switchboard.router import recommend_next
 from switchboard.registry import build_registry
 from switchboard.store import Store
+from switchboard.system import HostFacts, MemoryStatus
 
 from conftest import DEEP, FAST, FakeExecutor, FakeLlama, build_router
 
@@ -202,6 +203,96 @@ async def test_completion_metrics_close_the_loop(config: Config) -> None:
 
 
 # --- switching --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("entrypoint", ["automatic", "named", "direct"])
+async def test_every_switch_path_refuses_insufficient_physical_ram(
+    config: Config, entrypoint: str
+) -> None:
+    llama = FakeLlama(resident=FAST)
+    executor = FakeExecutor()
+    router = build_router(config, llama, executor=executor, free_ram_gb=1.2)
+    try:
+        deep = router.registry().by_id("deep-27b")
+        assert deep is not None
+        # The minimal GGUF test file has no real weights. Give it a realistic
+        # partial-offload footprint without loading or allocating those weights.
+        deep.size_bytes = 13 * 1024**3
+        assert deep.host_ram_estimate_gb() == pytest.approx(1.0)
+
+        if entrypoint == "direct":
+            result = await router.switch_to(deep)
+        else:
+            plan = await router.route(
+                context("Design a distributed scheduler and justify the trade-offs."),
+                policy="deep" if entrypoint == "automatic" else "auto",
+                explicit_model=deep if entrypoint == "named" else None,
+                requested_model="deep-27b" if entrypoint == "named" else None,
+            )
+            assert plan.switch is not None
+            result = plan.switch
+
+        assert not result.ok
+        assert "host RAM" in (result.error or "")
+        assert executor.calls == []
+    finally:
+        await close(router)
+
+
+async def test_switch_refuses_unknown_ram_but_resident_is_a_noop(config: Config) -> None:
+    llama = FakeLlama(resident=FAST)
+    executor = FakeExecutor()
+    router = build_router(config, llama, executor=executor)
+    try:
+        router.host._fixed = MemoryStatus(error="GlobalMemoryStatusEx failed")
+        deep = router.registry().by_id("deep-27b")
+        fast = router.registry().by_id("fast-9b")
+        assert deep is not None and fast is not None
+        result = await router.switch_to(deep)
+        assert not result.ok
+        assert "could not be measured" in (result.error or "")
+        same = await router.switch_to(fast)
+        assert same.ok and same.noop
+        assert executor.calls == []
+    finally:
+        await close(router)
+
+
+async def test_switch_rechecks_ram_instead_of_reusing_cached_measurement(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llama = FakeLlama(resident=FAST)
+    executor = FakeExecutor()
+    router = build_router(config, llama, executor=executor)
+    try:
+        deep = router.registry().by_id("deep-27b")
+        assert deep is not None
+        deep.size_bytes = 13 * 1024**3
+        readings = iter((MemoryStatus(free_gb=8.0), MemoryStatus(free_gb=1.2)))
+        monkeypatch.setattr("switchboard.system.memory_status", lambda: next(readings))
+        router._host = HostFacts(ttl_s=3600)
+        assert router.host.memory().free_gb == 8.0
+        result = await router.switch_to(deep)
+        assert not result.ok
+        assert executor.calls == []
+    finally:
+        await close(router)
+
+
+async def test_fully_gpu_resident_model_can_load_with_headroom(config: Config) -> None:
+    llama = FakeLlama(resident=DEEP)
+    executor = FakeExecutor()
+    router = build_router(config, llama, executor=executor, free_ram_gb=1.1)
+    try:
+        fast = router.registry().by_id("fast-9b")
+        assert fast is not None
+        fast.size_bytes = 8 * 1024**3
+        assert fast.fully_offloaded and fast.host_ram_estimate_gb() == 0
+        result = await router.switch_to(fast)
+        assert result.ok
+        assert executor.calls == ["fast-9b"]
+    finally:
+        await close(router)
 
 
 async def test_an_explicit_model_is_loaded_and_measured(config: Config) -> None:

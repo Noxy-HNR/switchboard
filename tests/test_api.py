@@ -136,6 +136,14 @@ async def test_switch_rejects_an_unknown_model(harness: Harness) -> None:
     assert response.status_code == 404
 
 
+async def test_switch_endpoint_refuses_low_ram_without_loading(harness: Harness) -> None:
+    harness.router.host._fixed.free_gb = 0.5
+    response = await harness.client.post("/agent/switch", json={"model": "deep-27b"})
+    assert response.status_code == 503
+    assert "headroom" in response.json()["detail"]["error"]
+    assert harness.executor.calls == []
+
+
 async def test_switch_reports_a_refusing_executor(config: Config) -> None:
     llama = FakeLlama(resident=FAST)
     async with Harness(config, llama, FakeExecutor(ok=False)) as harness:
