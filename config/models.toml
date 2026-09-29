@@ -144,44 +144,25 @@ load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 13 (2026-09-28), me
 [[model]]
 file = "Ternary-Bonsai-2-27B-PTQ1_0.gguf"
 id = "bonsai-27b"
-aliases = ["bonsai", "bonsai-27b"]
-role = "experimental"
-summary = "UNTESTED. PrismML's ternary (1.75-bit) compression of Qwen3.8-27B, 5.95 GB, run by PrismML's own llama.cpp build (Tools/llama-prism, set by serverBinary in models.json). 147K context (0.8 GB VRAM spare, recall verified at 85% full), about 51 tok/s, medium reasoning effort. Not abliterated."
-enabled = true
-tool_calling = "good"
-# Placeholder ceilings copied from the 2-bit Huihui until the overnight tests run. It is in
-# config/local.toml auto_exclude, so Switchboard loads it only when a request names it.
-
-[model.capability]
-general = 2.5
-coding = 2.2
-research = 2.4
-medical = 1.5
-writing = 2.4
-system_ops = 2.3
-
-[[model]]
-file = "Huihui-Qwen3.8-27B-abliterated-UD-IQ2_S-MTP.gguf"
-id = "huihui-27b-iq2"
-aliases = ["huihui-iq2", "huihui-2bit", "27b-long", "deep-long"]
+aliases = ["bonsai", "bonsai-27b", "27b-long", "deep-long", "long"]
 role = "deep-reasoning-long-context"
-summary = "Smaller 2-bit copy of the Huihui 27B (8.8 GB UD-IQ2_S with an MTP head plus n-gram speculation): a 57K context instead of 24K and faster, about 56 tok/s, but weaker at hard coding (35/48 vs 42/48 for the IQ3_XXS file). For when the 27B needs more room."
+summary = "Long-context 27B: PrismML's ternary (1.75-bit) compression of Qwen3.8-27B, 5.95 GB, run by PrismML's own llama.cpp build (Tools/llama-prism, set by serverBinary in models.json). 147K context, about 48 tok/s, medium reasoning effort. Matched the Huihui 27B on coding (43/48 vs 42/48) and passed 22/22 agent tasks including a 70K-token session. Not abliterated."
 enabled = true
 tool_calling = "good"
-# Measured against the IQ3_XXS file on the same tasks (sessions 10-13): coding 35/48 vs 42/48
-# at medium effort (class design 4/8 vs 8/8, hard 9/16 vs 12/16), reasoning set 7/8 vs 8/8,
-# agent tool tasks 18/18 vs 17/18. Coding ceiling 0.3 lower; the rest 0.1 lower for the 2-bit quant.
+# Measured against the Huihui IQ3_XXS file on the same tasks (session 14): coding 43/48 vs 42/48 at
+# medium effort, reasoning set 8/8 at medium and xhigh (Huihui 8/8), agent tool tasks 22/22 (Huihui
+# 17/18 at 24K). No measured basis to rate it above Huihui, so the same ceilings; its edge is context.
 
 [model.capability]
-general = 2.5
-coding = 2.2
-research = 2.4
-medical = 1.5
-writing = 2.4
-system_ops = 2.3
+general = 2.6
+coding = 2.5
+research = 2.5
+medical = 1.6
+writing = 2.5
+system_ops = 2.4
 
 [model.measured]
-gen_tps = 56.0
-gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 13 (2026-09-28), MTP + ngram-mod, contexts 32768-65536, prose 55.8-56.0 tok/s over five loads"
-load_s = 7.2
-load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 13 (2026-09-28), 5 loads, all 7.2 s, file cached"
+gen_tps = 48.5
+gen_tps_source = "C:/AI/Logs/overnight-tuning-log.md, session 14 (2026-09-29), ngram-mod, ctx 147456, 1100-token prose at full power"
+load_s = 6.1
+load_s_source = "C:/AI/Logs/overnight-tuning-log.md, session 14 (2026-09-29), loads of 5-9 s, file cached"
