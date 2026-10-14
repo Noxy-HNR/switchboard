@@ -15,7 +15,7 @@ Where a number is quoted, the command or file it came from is named.
 | RAM | **15.4 GB total** (4.3 GB free with the stack stopped) |
 | GPU 0 | NVIDIA GeForce RTX 5070 Ti Laptop, **12227 MiB VRAM**, driver 616.92, CUDA UMD 13.4 |
 | GPU 1 | Intel Graphics (iGPU), driver 32.0.101.6629 |
-| Python | 3.13.15 (`C:\Users\braxt\AppData\Local\Programs\Python\Python313`), 3.12 via the Store |
+| Python | 3.13.15 (`%LOCALAPPDATA%\Programs\Python\Python313`), 3.12 via the Store |
 | uv | 0.12.3 |
 | git | 2.55.0 |
 | Node / npm | **not installed** |
